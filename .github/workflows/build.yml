@@ -77,11 +77,11 @@ jobs:
       - uses: gradle/actions/setup-gradle@v5
 
       # Пустой DEBUG_ABI - debug-пакет со всеми архитектурами.
-      # Kotlin компилируется в процессе Gradle: демон на Linux не находит сессии по относительному kotlin.project.persistent.dir
+      # kotlin.project.persistent.dir абсолютным путём: относительный демон Gradle на Linux считает не от каталога проекта
       - name: Build
         run: |
           echo "DEBUG_ABI=" > local.properties
-          bash ./gradlew assembleDebug assembleRelease -Pkotlin.compiler.execution.strategy=in-process
+          bash ./gradlew assembleDebug assembleRelease "-Pkotlin.project.persistent.dir=$GITHUB_WORKSPACE/output/kotlin"
 
       - name: Collect packages
         run: |

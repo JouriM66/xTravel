@@ -79,9 +79,20 @@ jobs:
       # Пустой DEBUG_ABI - debug-пакет со всеми архитектурами.
       # kotlin.project.persistent.dir абсолютным путём: относительный демон Gradle на Linux считает не от каталога проекта
       - name: Build
+        id: build
         run: |
+          set -o pipefail
           echo "DEBUG_ABI=" > local.properties
-          bash ./gradlew assembleDebug assembleRelease "-Pkotlin.project.persistent.dir=$GITHUB_WORKSPACE/output/kotlin"
+          bash ./gradlew assembleDebug assembleRelease "-Pkotlin.project.persistent.dir=$GITHUB_WORKSPACE/output/kotlin" 2>&1 | tee gradle.log
+
+      # Ошибка Gradle в аннотацию запуска: аннотации видны без входа в GitHub, логи шагов - нет
+      - name: Report build error
+        if: failure() && steps.build.outcome == 'failure'
+        run: |
+          MSG=$( { grep -E '^e: ' gradle.log | head -n 20; awk '/^\* What went wrong:/{f=1} /^\* Try:/{f=0} f' gradle.log | head -n 40; } )
+          [ -n "$MSG" ] || MSG=$(tail -n 40 gradle.log)
+          MSG=${MSG//'%'/'%25'}; MSG=${MSG//$'\r'/}; MSG=${MSG//$'\n'/'%0A'}
+          echo "::error title=Gradle build failed::$MSG"
 
       - name: Collect packages
         run: |

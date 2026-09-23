@@ -1,0 +1,99 @@
+русский текст для того чтобы редакторы не путали кодировку
+
+src\utils - переиспользуемые помощники. Сюда смотреть ПЕРЕД тем как писать любую утилиту,
+константу или композабл: если нужное уже есть, повторно не создавать.
+Помеченное в исходниках FOR LOCAL USE лежит по месту применения и здесь не числится.
+
+КУДА КЛАСТЬ НОВОЕ, если нет файла своей темы:
+  utils.kt       утилитарные функции общего назначения
+  Extensions.kt  расширения системных классов
+  Consts.kt      значения, нужные больше чем одному файлу
+
+ГОТОВЫЕ СЕРВИСЫ, НЕ ИЗОБРЕТАТЬ ЗАНОВО. Лежат не здесь, но искать их надо так же рано:
+  HTTP-запросы            src\NetworkRequestManager.kt, единственное место сетевых вызовов
+  сообщения пользователю  src\Notify.kt (обычные), src\Overlays.kt AppDialog (требующие реакции)
+  звук и уведомления      src\Alerts.kt
+  перехват сбоев          src\Failures.kt: guard, guarded
+  таймер и бездействие    src\AppTimer.kt: TimerManager, UserActivity, IdleWatcher
+  время приложения        src\AppClock.kt
+  отправка файлов         src\Overlays.kt Sharing
+  запись и чтение данных  src\Storage\
+
+Consts.kt: значения, нужные больше чем одному файлу.
+  TOOLBAR_HEIGHT 64.dp; TOOLBAR_COLOR; SELECTED_BACKGROUND (отмеченные строки);
+  HIGHLIGHT_BACKGROUND (строка, ради которой открыт список, держится до следующей подсветки)
+  INACTIVE_COLOR, PASSIVE_COLOR (ручки шторки, будильник без расписания)
+  DELETE_ICON_COLOR, DELETE_BACKGROUND (удаление смахиванием), LINK_COLOR (ссылки в тексте)
+  START_ICON_COLOR (запуск, готовый единственный вариант), VARIANTS_ICON_COLOR (несколько вариантов)
+  ROUTE_WAYS_ICON (иконка геометрии остановки, варианты выбора - в комментарии),
+    ROUTE_WAY_NONE_COLOR, ROUTE_WAY_ONE_COLOR, ROUTE_WAY_MANY_COLOR - её цвета
+  NORTH_ON_COLOR, SUBMENU_ICON, WAIT_DIM_ALPHA, DEBUG_TIMES
+  LIST_SCROLLER_WIDTH (ширина полоски прокрутки списков шторки, её берёт scrollIndicator)
+  MAP_MIN_ZOOM 1, MAP_MAX_ZOOM 21, MAP_ROTATE_AFTER_IDLE_MS 3000, GPS_COURSE_AVERAGING_POINTS 3,
+  ROUTE_SPEED_AVERAGING_POINTS 3 (окно скорости для времени пути навигации)
+
+utils.kt: утилитарные функции общего назначения, у которых нет файла своей темы.
+  iconTint(icon: ImageVector?, default: Color): Color - правило "иконка удаления везде красная".
+    Его уже зовут MenuItem, ToolbarItem и DialogButton, поэтому отдельно красить иконку
+    удаления не нужно. Список красящихся иконок лежит рядом, в этом же файле.
+  formatCount(Int), formatCount(Long): 850, 1.3K, 2.1M, 4.7G. Годится и для штук, и для байтов.
+  appVersion(): "0.1.52-debug" - как в имени файла пакета, с видом сборки.
+  linkedText(text: String, clickable: Boolean): AnnotatedString - веб-ссылки (http://, https://, www.) синие
+    подчёркнутые; с clickable касание ссылки открывает её, мимо ссылки - обработчику текста.
+
+Extensions.kt: расширения системных классов.
+  TextUnit.coerceIn(low: TextUnit, high: TextUnit): TextUnit - у TextUnit нет Comparable,
+    поэтому обычный coerceIn на него не годится.
+  List<T>.replaced(index: Int, value: T): List<T> - копия списка с заменённым элементом,
+    индекс за границами оставляет список прежним.
+
+GeoUtils.kt: география и попадание по линиям. Расчёты общего вида здесь, проекция карты - в map\.
+  GeoMath.distance(lat1,lon1,lat2,lon2): метры
+  GeoMath.bearing(lat1,lon1,lat2,lon2): начальный азимут
+  GeoMath.samePlace(...): сравнение координат до 5 знака. Единственный допустимый способ
+    сравнивать координаты, на нём держатся слияние импорта и поиск точки по месту.
+  segmentDistance(x,y,x1,y1,x2,y2): экранное расстояние до отрезка
+  nearLine(TrackLine, screen, viewport, limit): попадание по линии трека
+  nearPolyline(List<GeoPoint>, screen, viewport, limit): то же для списка координат
+  formatCoordinates(GeoPoint): "широта, долгота" с 5 знаками, локаль-независимо
+  projectOnLine(line, place, from, ahead) -> LineProjection(index, place, meters):
+    проекция места на ломаную, ищет вперёд от index в окне ahead. Так ведётся навигация.
+
+Composables.kt: независимые элементы интерфейса.
+  DeleteDialogButton(fullWidth): общая красная кнопка удаления для диалогов
+  Property(label, value): подпись над значением
+  AlignedProperty(label, value, state): колонки с общей шириной подписи, ширина растёт по самой длинной
+  ScrollArrow(toLeft, modifier): маркер края, за которым есть что прокрутить
+  DragHandle: ручка перетаскивания строки, сообщает смещение, сама список не меняет
+  distanceText(meters), durationText(seconds): расстояние и время одной строкой
+  ModalHeader(title: String, actions: @Composable RowScope.() -> Unit = {}): неподвижный заголовок
+    полноэкранного окна, кнопки прижаты вправо. Им пользуются настройки и свойства точки
+  rememberAppIcon(packageName, fallback: ImageVector): Painter - иконка установленного приложения или fallback;
+    пакет должен быть в queries манифеста
+
+ListenersManager.kt
+  ListenersManager<L>: потокобезопасный реестр подписчиков любого интерфейса.
+    isEmpty, register (повтор экземпляра пропускается), unregister, notifyEach(action).
+    Владелец событий держит по одному менеджеру на интерфейс и о подписчиках ничего не знает.
+
+ScrollIndicator.kt
+  Modifier.scrollIndicator(ScrollState, width) и Modifier.scrollIndicator(LazyListState, width):
+    тонкая неподвижная полоска положения у правого края, поверх содержимого, не скрывается.
+    Ставится во всех прокручиваемых местах шторки. У LazyListState положение считается
+    по средней высоте видимых строк.
+    width по умолчанию LIST_SCROLLER_WIDTH из Consts.kt - единственная точка изменения ширины.
+
+TextSearch.kt: варианты запроса по системному языку.
+  TextSearch.variants(text): исходный, исправленная раскладка, бытовой транслит
+  TextSearch.TRANSLIT: русская таблица транслита, ей же именуются импортируемые GPX-треки
+  Таблицы en/ru лежат в res\ext\raw\text_search.txt
+
+VoiceInput.kt: системное распознавание речи на языке телефона.
+  rememberVoiceInput(onText): вернёт функцию запуска распознавания
+  VoiceButton(onText): готовая кнопка микрофона
+
+ImageQuality.kt: качество картинок, зовут PhotoTool.kt и points\PointInfoEditor.kt.
+  MIN_IMAGE_QUALITY 50; imageQuality(): настройка, приведённая к 50..100
+  recompressPicture(file): файл камеры переписывается JPEG выбранного качества, разрешение то же
+  writeCompressedPicture(source, file): поток галереи сразу в JPEG
+  При качестве 100 файл не трогается.

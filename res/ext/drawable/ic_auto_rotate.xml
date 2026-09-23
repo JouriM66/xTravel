@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- русский текст для того чтобы редакторы не путали кодировку -->
+<!-- Map direction "auto rotation": the course arrow inside a turning arc. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#639922"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:pathData="M5.07,8A8,8 0,1 1,5.07 16" />
+    <path
+        android:fillColor="#639922"
+        android:pathData="M2.6,17.4L6.4,18.2L5.7,14.2z" />
+    <path
+        android:fillColor="#378ADD"
+        android:pathData="M12,5.5L16,16.5L12,14L8,16.5z" />
+</vector>

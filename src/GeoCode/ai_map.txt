@@ -1,0 +1,16 @@
+русский текст для того чтобы редакторы не путали кодировку
+
+src\GeoCode\ - геокодирование. Не зависит от карты: работает и при выключенной подложке.
+HTTP идёт через NetworkRequestManager (src\NetworkRequestManager.kt), своего сетевого кода тут нет.
+
+GeoSearchManager.kt
+  GeoAnswer(point, name, description): любое поле может отсутствовать; valid.
+  IGeoSearchEngine: mustBeAsync, byPosition, byText.
+  GeoSearchManager: реестр движков. register, byPosition, byText - собирают ответы
+    всех движков и отдают ОДИН колбэк в главном потоке.
+
+YandexSearch.kt
+  YandexSearchEngine: HTTP API Яндекса. Ключ и число результатов из настроек,
+    язык системный из допустимых или en_US, ошибки через Notify, licenseInfo только при ключе.
+  StreetPrefixes.strip: убирает служебные слова из начала названий.
+    Таблица по языкам - res\ext\raw\street_prefixes.txt.

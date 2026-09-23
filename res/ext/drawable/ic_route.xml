@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- русский текст для того чтобы редакторы не путали кодировку -->
+<!-- Planned route: a way from one place to another with a stop on it. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:strokeColor="#00A600"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M5,19C5,19 5,13 10,13S15,9 15,5" />
+    <path
+        android:fillColor="#378ADD"
+        android:strokeColor="#185FA5"
+        android:strokeWidth="0.8"
+        android:pathData="M2.6,19a2.4,2.4 0,1 0,4.8 0a2.4,2.4 0,1 0,-4.8 0z" />
+    <path
+        android:fillColor="#E24B4A"
+        android:strokeColor="#8C2B2A"
+        android:strokeWidth="0.8"
+        android:pathData="M15,2C13.3,2 12,3.3 12,5c0,2.2 3,5.5 3,5.5s3,-3.3 3,-5.5c0,-1.7 -1.3,-3 -3,-3z" />
+</vector>

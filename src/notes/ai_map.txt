@@ -1,0 +1,8 @@
+русский текст для того чтобы редакторы не путали кодировку
+
+src\notes\ - записки: метаинформация без привязки к месту.
+
+NotesStore.kt
+  NotesStore: notes (MetaInfo из points\MetaInfo.kt), onLoaded, update, applyImport (слияние MetaInfo.merged).
+    В редакторе метаинформации записки - InfoOwner.Notes.
+  NotesData: секция notes, в ней элементы по порядку (PointXml). В GPX записки не участвуют.

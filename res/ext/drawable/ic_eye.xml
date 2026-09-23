@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- русский текст для того чтобы редакторы не путали кодировку -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:strokeColor="#378ADD"
+        android:strokeWidth="1.8"
+        android:strokeLineJoin="round"
+        android:pathData="M2,12C4.5,7 8,5 12,5s7.5,2 10,7c-2.5,5 -6,7 -10,7s-7.5,-2 -10,-7z" />
+    <path
+        android:fillColor="#378ADD"
+        android:pathData="M9,12a3,3 0,1 0,6 0a3,3 0,1 0,-6 0z" />
+</vector>

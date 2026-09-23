@@ -1,0 +1,3 @@
+# русский текст для того чтобы редакторы не путали кодировку
+# Words removed from the start of a place name received from the geocoder: language=word;word;...
+ru=улица;проспект;переулок;бульвар;шоссе;проезд;набережная;площадь;тупик

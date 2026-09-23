@@ -1,0 +1,169 @@
+русский текст для того чтобы редакторы не путали кодировку
+
+src\ - ядро и интерфейс: запуск, главное окно, его каркас и общие механизмы.
+Подкаталоги описаны своими ai_map.txt. Ближайшие соседи:
+  Storage\   формат данных, чтение-запись, GPX, экспорт и импорт
+  Commands\  самостоятельные функции меню: выбор данных, уборка, о программе
+
+ЗАПУСК И ЖИЗНЬ ПРИЛОЖЕНИЯ
+
+XTravelApp.kt
+  XTravelApp: Application. Обработчик падений и инициализация всего: AppSession, Settings,
+    YandexMapEngine, AppDirs, Maps, GpsDataManager, DataStore.
+    Здесь же регистрации, определяющие состав функционала: владельцы данных в DataOwnerManager,
+    YandexSearchEngine в GeoSearchManager, фильтры в GpsDataManager,
+    поставщики лицензий в LicenseManager (Commands\AboutScreen.kt), провайдеры "поделиться" в GeoDataShareManager,
+    импортеры версий формата данных в DataFormats. Здесь же очистка каталога отправки при запуске. Новый функционал такого рода подключается отсюда.
+
+MainActivity.kt
+  MainActivity: AppCompatActivity, singleTop.
+    MainScreen: TopToolbar, MapArea + BottomSheet.Host, BottomToolbar;
+      поверх FloatingBar, ModalScreen, AppDialog.
+    ПОРЯДОК "НАЗАД" задан порядком регистрации BackHandler: диалог, модальное окно,
+      плавающий тулбар, шторка, корневой вопрос о выходе. Добавляешь слой - учитывай место.
+    Касания и клавиши уходят в UserActivity (hold/resume/touch) - от этого зависят
+      слежение за GPS и автоповорот карты.
+    onStop - DataStore.saveNow.
+
+AppSession.kt
+  AppSession: контекст приложения и текущая активити (слабая ссылка).
+    attach, detach, ensureRunning, exit, message, toast.
+    При restartNeeded exit завершает процесс, чтобы MapKit взял новый ключ.
+  AppDirs: каталог данных с запасным вариантом. tracks, images, share - геттеры создают каталог.
+
+AppModule.kt - абстракция модуля и слоя карты.
+  IAppModule: start, stop, draw, hitTest. Правило потоков - в комментарии интерфейса.
+  ISelectableMapObject: selected, dragId, dragStart, dragTo, dragEnd.
+  MapDrawContext, MapTexts, drawOutlinedText.
+  ModuleHost: startAll, stopAll, requestRedraw (из любого потока), observeRedraw, hitTest.
+AppModules.kt
+  AppModules.all: реестр модулей. ПОРЯДОК = порядок запуска и рисования,
+    обратный - остановка и hitTest. Новый слой карты добавляется сюда.
+
+DataOwner.kt - абстракция подсистемы, владеющей своими данными. Сам формат - в Storage\.
+  IDataOwner: tag (своя секция в data.xml), write, read, search. Все с заглушками.
+  DataFound: результат поиска и действие, показывающее источник.
+  DataOwnerManager: register, write, readSection, search. Реализуют PointsData, TracksData,
+    NotesData, GlobalData, RouteStore. Новый тип данных подключается через этот интерфейс.
+
+AppClock.kt
+  AppClock: время приложения - часы устройства или отладочное (useTime).
+    millis, now, minuteOfDay, dayOfWeek, dateText, timeText, tick, debugStart.
+    tick меняется раз в секунду; по нему живут часы в тулбаре и расписания точек.
+
+AppTimer.kt - единственный таймер приложения и учёт действий пользователя.
+  IBlinkListener: onBlinkOn, onBlinkOff, фазы каждые 500 мс. Секундную работу делать в onBlinkOn.
+  TimerManager: subscribe (вызов в потоке подписчика, без подписчиков таймер не работает), unsubscribe.
+  IUserListener, UserActivity: touch, hold, resume - вложенные удержания, главный поток.
+  IdleWatcher: время бездействия с учётом вложенных hold.
+
+Failures.kt - перехват сбоев.
+  FailureSource: MAP отключается при первом сбое, GPS после 3, BACKGROUND не отключается.
+  Failures: report, guard, guarded (исполнитель с перехватом каждой задачи),
+    installCrashHandler, showLastCrash. Отчёт о падении - filesDir\last-crash.txt.
+    Нативные падения сюда не попадают, только logcat.
+
+ИНТЕРФЕЙС
+
+Ui.kt - тема и общие элементы. Перед тем как рисовать свой элемент, смотреть здесь.
+  XTravelTheme, BRAND_BLUE, ROW_BUTTON_WIDTH.
+  ToolbarItem, RowButton, MenuItem (с ImageVector или Painter без перекраски), ChoiceMenuItem, DialogButton, CancelButton.
+  sheetFirst: элемент вне шторки закрывает её и сразу выполняет действие.
+
+BottomSheet.kt - единственная шторка и каркас редакторов.
+  SheetEditor: hasToolbar, caption (строка заголовка, пустая - без него; open берёт ресурс), ToolbarButtons,
+    getContentElementsCount, Content.
+  BottomSheet: ownerId, isOpen, coveredPx (сколько карты закрыто снизу), toolbarEditor, topEditor,
+    open, push, back, close(after), expand, toggleExpanded, hold.
+  Заголовок шторки: ручка посередине, слева caption редактора, справа число элементов;
+    оба во всю высоту заголовка и системным цветом текста.
+  Стек редакторов: open - новый стек, push - поверх текущего, back - к прошлому,
+    close - сброс стека. Системная "Назад" зовёт back: редакторы снимаются по одному,
+    на последнем шторка закрывается, вопрос о выходе задаётся уже при закрытой шторке.
+  hold - страж несохранённых правок верхнего редактора, его спрашивают перед back, close и open.
+    СТРАЖ СНИМАЕТСЯ В ОБОИХ СЛУЧАЯХ - и когда отпустил действие, и когда взял его на себя,
+    иначе open при отпустившем страже зацикливается через close { open }.
+
+ModalScreen.kt
+  ModalScreen: полноэкранное модальное окно. ownerId, open, close, Host.
+    "Назад" Host закрывает без вопросов; окно со стражем правок ставит свой BackHandler внутри содержимого.
+    Заголовок окна - utils ModalHeader.
+
+Overlays.kt - всё, что поверх карты и шторки.
+  AppDialog: единственный диалог. message (с OK, ждёт закрытия предыдущего, можно звать
+    из фонового потока), confirm, confirmPlural, input, show, close.
+    Открытый диалог держит UserActivity.hold.
+  MapPopup: меню в точке карты. marker - место открытого меню, его рисует TapMarkerModule.
+  FloatingBar: временный тулбар с отменой владельца. isOpen, show, close, cancel.
+  IconButtonImage, EyeButton, SwipeRevealRow (смахивание к кнопке удаления).
+  Sharing: shareText, uriFor, share(files, mime, text) - через FileProvider; текст идёт подписью к файлам.
+    Данные приложения отдаются только через провайдеры Storage\GeoDataShare.kt, не отсюда напрямую.
+
+SettingsScreen.kt
+  SettingsScreen: неподвижный заголовок (ModalHeader) и прокручиваемые группы настроек; редакторы строк -
+    число, переключатель, комбобокс, цвет с палитрой, ключ со справкой. Список фильтров GPS строится из реестра GpsDataManager.
+
+MainMenu.kt: главное меню и подменю. Поделиться, Импорт, Очистить (все три открывают дерево
+  Commands\DataSheet.kt), Уборка данных, настройки, о программе, язык, тип карты, выход.
+  Отладочное подменю только в debug-сборке: время приложения и эмуляция позиции.
+
+SearchSheet.kt
+  SearchSheet: поиск по данным приложения через DataOwnerManager.search и внешний
+    через GeoSearchManager.byText (по кнопке, после предупреждения с чеком askExternalSearch).
+    searchResultsCount - счётчик для шторки.
+    Результат ведёт к источнику: строка точки в списке, PointInfoEditor на нужном элементе,
+    подсвеченная строка трека.
+
+Notify.kt
+  Notify.info, Notify.error: потокобезопасны, сообщения объединяются за секунду.
+    Режим доставки - Settings.notifyMode: TOAST, DIALOG, LOG.
+  Сюда направлены ОБЫЧНЫЕ уведомления. Сообщения, требующие реакции, - через AppDialog.
+
+PhotoTool.kt
+  PhotoToolButton: кнопка "Фото" нижнего тулбара. Серия снимков системной камерой,
+    файлы копятся в images без привязки, затем выбор назначения: ближайшая точка,
+    записки или точка здесь. Отмена удаляет файлы и снимает защиту от уборки.
+    Пересжатие - utils\ImageQuality.kt.
+
+AppCommand.kt - команды интерфейса.
+  IAppCommand: available (наблюдаемая), execute.
+  AppCommands: showPoints, showTracks, showRoute, showNotes, search, openSettings, openAbout,
+    selectMapType, selectLanguage, nextMapDirection, followGps, shareData, clearData,
+    checkFiles, saveSettings, exit.
+  CommandMenuItem: пункт меню, следящий за доступностью и закрывающий меню перед вызовом.
+
+НАСТРОЙКИ
+
+Settings.kt - ВСЕ настройки приложения. Смотреть при любой задаче: где что настраивается.
+  Setting<T> и типы IntSetting, BoolSetting, StringSetting, ColorSetting, EnumSetting.
+    Значение наблюдаемое, пишется в SharedPreferences, onChange зовётся после записи.
+  Settings.export(): key=value для "Save settings", БЕЗ ключей MapKit и Геокодера.
+  Состав: useGps, showSpeed, keepScreenOn, notifyMode, askExternalSearch, imageQuality;
+    mapType, mapDirection, map3d, mapkitKey, geocoderKey, geocoderResults;
+    autoPosition, rings, ringStepValue;
+    filterMode, filterAccuracy, filterStationarySpeed, filterMinDistance, filterMaxSpeed;
+    minPoints, tailPoints, currentTrackWidth/Color, savedTrackWidth/Color;
+    цвета и размеры точек - pointIndependentColor, pointPlannedColor, pointActiveColor,
+    pointVisitedColor, pointAlarmColor, availabilityOpenColor, availabilityClosedColor,
+    timeToOpenColor, timeToCloseColor, pointNameSize, pointTimeSize;
+    routeTransport, routeMarkPoints, routeActiveColor, routeInactiveColor, routeAutoCalculate, routeAutoSort,
+    routeArrivalRadius, routeShowManeuver;
+    miuiConfirmed.
+
+Languages.kt
+  AppLanguage, Languages: all (English, Russian), systemLocale, current, select, init.
+    Выбор через AppCompat, независимо от системного языка.
+
+СЕТЬ
+
+NetworkRequestManager.kt - ЕДИНСТВЕННОЕ место HTTP-запросов, своих не заводить.
+  INetworkListener: onNetworkResult, onNetworkError.
+  NetworkRequestManager.request (свой поток "net", ответ листенеру в главном),
+    NetworkRequestManager.fetch (блокирующий, для тех, кто уже в фоне).
+
+ЗВУКОВЫЕ ОПОВЕЩЕНИЯ (реализованы, но пока не вызываются ниоткуда)
+
+Alerts.kt
+  Alert (звук, текст, повтор, отмена), AlertImportance, AlertRepeat, SystemSound, AlertSound.
+  Alerts.notify, Alerts.cancel: очередь и воспроизведение, запись в шторке уведомлений.
+  AlertReceiver (кнопка и смахивание), AlertService (служба mediaPlayback).

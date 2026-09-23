@@ -1,0 +1,106 @@
+русский текст для того чтобы редакторы не путали кодировку
+
+src\points\ - точки интереса: модель, хранилище, слой карты, меню, списки, редакторы,
+расписание, картинки, импорт GPX.
+
+PointModel.kt - модель, неизменяемая.
+  MapPoint: координаты, info (MetaInfo; elements - сокращение только для чтения), видимость, иконка, статус, посещённость,
+    highlighted (только в памяти), autoVisit + visitRadius, расписание и ScheduleDisplay,
+    scheduleControl + warnBefore.
+    Признак включения и значение РАЗВЕДЕНЫ: значение не теряется при выключении.
+    DEFAULT_VISIT_RADIUS, DEFAULT_WARN_BEFORE.
+  PointElement: Text (первый текст точки служит ей именем) и Picture (имя файла в images).
+  ScheduleRule: дни недели и время от-до в МЕСТНЫХ минутах, без дат и пояса. everyDay, valid.
+  PointStatus (независимая, запланированная, активная), Availability, ScheduleDisplay.
+  parseTime, formatTime.
+
+PointStore.kt - владелец точек. Главный поток.
+  IPointListener: onPointChanged, onPointsRemoved. listeners.
+  PointStore: points, nextId, scrollTarget,
+    onLoaded, find, findOrCreate, findAt, add, update,
+    remove, move, focus, highlight,
+    newPictureFile, releasePicture, pictureFile, usedPictures,
+    Import, prepareImport (поток "io"), applyImport (главный поток).
+  PointsData: секция points. PointXml: общие элементы точек и записок.
+  Слияние при импорте: точка с теми же координатами (5 знаков) не добавляется, а сливается -
+    новые тексты по точному совпадению, картинки по размеру и первым 200 байтам;
+    иконка, высота, автопосещение и расписание берутся только если своих нет;
+    статус существующей не меняется.
+
+PointSchedule.kt - модуль, подписан на таймер и GPS.
+  ScheduleState, PointSchedule: tick, state, shownTime, availability, alarm, alarmed,
+    start, stop, onBlinkOn.
+  Автопосещение по GPS: у НЕЗАВИСИМОЙ точки не считается; запланированная или активная
+    в радиусе становится посещённой и независимой.
+
+PointsLayer.kt - слой булавок.
+  draw, hitTest, start, stop, drag, startDrag, dragTo, endDrag, drawPlainPin, formatMinutes.
+  ЦВЕТ БУЛАВКИ в этом порядке: тревога, активная, запланированная, посещённая, независимая.
+    Маршрут статусы точек не меняет.
+
+PointIcons.kt
+  PointIcons: names, vector (имя -> material-icons-extended), Prepare (painter-ы готовятся
+    в композиции), рисование иконки на булавке, ICON_COLOR, GRID.
+
+PointMenus.kt - действия и меню точки и места.
+  PointActions: menuPlace, add, addWithMapData, addAndEdit, requestMapData (через
+    GeoSearchManager.byPosition),
+    setControl и toggleControl - ЕДИНСТВЕННОЕ место, где включается контроль расписания,
+    со всеми проверками; в PointPropertiesEditor проверок нет.
+  Меню места: координаты, добавить точку и заметку, добавить точку с фото (сразу камера).
+    Отдельного "добавить точку" нет: точка создаётся вместе с инструментом.
+  PointPopupMenu(id, PointMenuSource, close): ЕДИНОЕ контекстное меню точки - карта (PointsLayer), список
+    (PointsSheet), шторка маршрута (RouteSheet). Своих меню точки нигде не заводить. По источнику выпадают:
+    "Переместить" - только на карте, "Показать на карте" - не на карте, "Показать в списке" и "Заметки" - не в списке.
+    "Поделиться" - общее меню Storage\GeoDataShare.kt на месте списка пунктов.
+  RouteItem: пункт "добавить в маршрут / исключить" внутри единого меню.
+  PointMoveMode: перенос существующей точки перетаскиванием. activeId, start, done.
+  PointDialogs: delete, moveTo, coordinates.
+
+PointsSheet.kt - список точек, открывается на нужной или на ближайшей к центру карты.
+  PointsListEditor: корневой редактор шторки точек (AppCommands.showPoints), тулбар "поделиться" всеми точками.
+  Строка: кнопки видимости, булавки (единое меню точки), будильника и свойств, сводка элементов.
+  Смахивание - удаление. Долгое нажатие - PointSelectionEditor: чекбоксы, перетаскивание,
+    выбор по фильтру (PointFilter), "поделиться" выбранными и групповое действие (PointAction).
+  toggleSelectedPoint(id): касание булавки при открытом PointSelectionEditor переключает выбор и
+    прокручивает список вместо меню; зовёт PointsLayer.
+  AlarmIcon, PointPin.
+
+PointPropertiesEditor.kt - свойства точки, полноэкранное модальное окно, не редактор шторки.
+  openPointProperties(id): единственный вход, его зовут меню точки, список точек и шторка маршрута.
+  Правка ВРЕМЕННОЙ КОПИИ, применение по "ОК"; отмена и "назад" с правками спрашивают
+    (свой BackHandler поверх ModalScreen). Удаление точки закрывает окно.
+  Координаты, иконка, посещённость, статус, автопосещение с радиусом, расписание,
+    отображение и контроль расписания.
+
+MetaInfo.kt
+  MetaInfo: тексты и картинки по порядку - метаинформация точки и записок. pictures, caption, merged (правила импорта).
+  InfoOwner: владелец метаинформации - Point(id) или Notes. info (null - владельца нет), caption, update,
+    shareSet(элементы) - набор для "поделиться" с владельцем только из этих элементов. Редактор работает только через него.
+
+MetaInfoShare.kt
+  TextPhotoShare: провайдер IGeoDataShare "Текст и фото" - одна точка или записки одним вызовом: все картинки и
+    тексты через перевод строки, у точки первой строкой ссылка на Яндекс Карты (map\MapLinkShare.kt yandexMapsLink).
+
+PointInfoEditor.kt - метаинформация точки и записок.
+  PointInfoEditor(owner: InfoOwner, focusElement, start); PointInfoStart (NONE, TEXT, PICTURE, CAMERA) -
+    инструмент, открываемый сразу: у PICTURE это меню "камера или галерея", у CAMERA сама
+    камера; NEW_ELEMENT - запрос нового текста. Заголовок шторки - "Данные: имя точки".
+  Элементы строками, перетаскивание, смахивание - удаление. Долгое нажатие на строку -
+    PointElementsSelectionEditor: чекбоксы по строкам (строка картинок целиком), перетаскивание,
+    тулбар "Выбрать" (все, ни одной, инвертировать), "Поделиться" и "Удалить" выбранное с подтверждением.
+  Текст: изменить, удалить, поделиться. Веб-ссылки в тексте (utils linkedText) открываются касанием вне режима выбора,
+    касание мимо ссылки - меню строки. Картинка: полноэкранный просмотр всех картинок с заменой, удалением, поделиться.
+  "Поделиться" везде - общее меню Storage\GeoDataShare.kt с набором InfoOwner.shareSet.
+  Тулбар: текст, картина (камера серией или галерея пачкой, пересжатие по
+    utils\ImageQuality.kt), добавить координаты и данные карты - последнего у записок нет, поделиться всем.
+  editPointText(owner, index): правка текста МОДАЛЬНЫМ ДИАЛОГОМ поверх всего, не редактором
+    шторки; вставка из буфера, микрофон, ОК и отмена справа от поля. Пустой текст удаляет
+    элемент, NEW_ELEMENT добавляет новый.
+
+Pictures.kt - декодирование с уменьшением и кэш.
+  Pictures: decode, aspect, forget.
+  FitPicture, SquareThumb, PictureViewer (масштаб и сдвиг).
+  У всех трёх необязательный каталог - для чужих картинок, например из импорта.
+
+Отдача точек - провайдерами IGeoDataShare в Storage\ и map\, импорт GPX - Storage\GpxImport.kt.

@@ -1,0 +1,13 @@
+# dev unique data
+local.properties
+
+output/
+build/
+.git/
+.idea/
+.gradle/
+*.iml
+
+#internals
+\!*
+

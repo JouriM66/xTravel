@@ -1,0 +1,78 @@
+русский текст для того чтобы редакторы не путали кодировку
+
+src\map\ - подложка карты, камера, проекция, жесты, служебные слои, MapKit.
+Карта ПАССИВНА: своих жестов у подложки нет, камерой управляет только приложение.
+
+MapEngine.kt - типы и интерфейсы карты.
+  GeoPoint(lat, lon): основной тип места во всём приложении.
+  CameraState, MapPointInfo, MapOpenRequest.
+  IMapProjection: tileSizeDp, toWorld, toGeo, metersPerWorldUnit.
+  MapCalibration: где подложка на самом деле нарисовала центр камеры и сколько пикселей
+    занимает шаг по миру. БЕЗ НЕЁ свои объекты уезжают с карты.
+  IRouteListener: onRouteReady, onRouteFailed.
+  IMapEngine: setCamera, getInfoForPoint, settingsChanged, openExternal, handleTap,
+    start, stop, release, Backdrop, projection, calibration,
+    requestRoute (по умолчанию false - движок маршруты не строит).
+  MapType: выбор поставщика и createEngine; Яндекс без ключа MapKit даёт сетку.
+
+BlankMapEngine.kt
+  BlankMapEngine: пустой фон под своими слоями.
+
+MercatorProjection.kt
+  WorldPoint, MercatorProjection: эллипсоидальный Меркатор WGS-84, как у Яндекса.
+    MAX_LAT, tileSizeDp, toWorld, toGeo, metersPerWorldUnit.
+    Расстояния и азимуты общего вида - в utils\GeoUtils.kt, не здесь.
+
+MapViewport.kt
+  MapViewport: перевод мир <-> экран для камеры и размера холста, метры на пиксель.
+    С привязкой подложки центр и масштаб берутся у неё, а не считаются.
+
+Maps.kt - камера приложения и слежение за позицией. Главный поток.
+  PositionMode (START, CUSTOM, AUTO), MapDirection (север, автоповорот, ручной),
+  PositionIndicator (состояние кнопки позиции и иконки уведомления GPS).
+  Maps: type, shownType, engine, camera, lastViewport (публикует MapArea), positionMode,
+    init, select, disableEngine, move, moveByGesture, centerOn, showArea, followGps,
+    onLocation, rotateTo, start, stop, save.
+  Подписан на UserActivity: hold приостанавливает слежение за GPS и запоминает центр;
+    на resume ручной режим включается только после сдвига ОДНИМ пальцем на заметное
+    расстояние. Поворот, масштабирование и инерция режим НЕ переключают.
+
+MapArea.kt
+  MapArea: подложка, холст модулей, общий обработчик жестов - сдвиг, инерция, щипок,
+    поворот, двойной тап, тап двумя пальцами, долгое нажатие (перетаскивание объекта),
+    режим переноса точки.
+  МАСШТАБ И ПОВОРОТ ВСЕГДА ВОКРУГ ЦЕНТРА ЭКРАНА и позицию не меняют, поэтому режим
+    расположения их переживает. Карту двигает только сдвиг одним пальцем и его инерция.
+  MapTap.onTap: объект -> selected; иначе закрыть шторку и показать меню места.
+    showPlace: меню по заданным координатам; место вне видимой области переводит карту
+    в ручной режим и центрует её на нём.
+
+MapModules.kt - служебные слои: GridModule (сетка без карты), TapMarkerModule (метка
+  открытого меню), CrosshairModule (крест в ручном режиме), ScaleBarModule (линейка).
+
+YandexMapEngine.kt - MapKit как пассивная подложка.
+  calibration через MapWindow.worldToScreen - единственный верный источник экранных позиций.
+  ensureReady: ключ из настроек, язык, инициализация. MapKit берёт ключ ОДИН РАЗ ЗА ПРОЦЕСС,
+    поэтому keyChanged при смене ставит restartNeeded.
+  Все вызовы MapKit обёрнуты Failures.guard(MAP).
+  openExternal (зовёт только касание логотипа), handleTap (касание логотипа открывает Яндекс Карты), licenseInfo,
+  setCamera, start, stop, release, Backdrop, settingsChanged.
+
+MapLinkShare.kt - провайдеры IGeoDataShare (Storage\GeoDataShare.kt) ссылками в приложения карт.
+  Места набора - остановки первого маршрута, без маршрутов - точки; одно место открывается точкой, несколько - маршрутом.
+  YandexMapsSiteShare (без лимита), DoubleGisShare (до 12), GeoAppShare (схема geo, одна точка, только при наличии
+    приложения geo). yandexMapsLink(place): ссылка на место, её же берёт points\MetaInfoShare.kt.
+  Видимость geo-приложений и пакетов Яндекс Карт и 2ГИС (их иконки) - queries в манифесте.
+  Способ передвижения маршрута берётся из Settings.routeTransport.
+
+YandexRoutes.kt - запрос маршрутов у Яндекса.
+  YandexRoutes.request(способ передвижения, концы, слушатель).
+  Движки: PedestrianRouter, BicycleRouterV2, MasstransitRouter (TransportFactory, все три
+    отвечают типами masstransit) и DrivingRouter (DirectionsFactory).
+  Манёвры и готовую длину пути дают ТОЛЬКО автомобильные ответы, у остальных длина
+    считается по линии. Особенности вызова MapKit - в memory.md.
+
+AutoPosition.kt - два модуля, подписчики GPS и UserActivity.
+  AutoPosition: возврат к авто-позиции после бездействия (Settings.autoPosition).
+  MapRotation: автоповорот по курсу, пока рисуется стрелка.
+  При эмуляции GPS оба ничего не делают.

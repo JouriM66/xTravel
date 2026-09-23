@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- русский текст для того чтобы редакторы не путали кодировку -->
+<!-- Files given to other applications: tracks and pictures in the data directory, shared copies in the cache. -->
+<paths>
+    <external-path name="data" path="Android/data/com.jm.xtravel/" />
+    <external-files-path name="files" path="." />
+    <files-path name="internal" path="." />
+    <cache-path name="share" path="share/" />
+</paths>

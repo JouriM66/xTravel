@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- русский текст для того чтобы редакторы не путали кодировку -->
+<resources>
+    <!-- The system dark mode (MIUI forces it on light applications) must not repaint the map drawing: white outlines turn black. -->
+    <style name="Theme.XTravel" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="android:forceDarkAllowed">false</item>
+    </style>
+</resources>

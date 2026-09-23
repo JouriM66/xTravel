@@ -1,0 +1,50 @@
+русский текст для того чтобы редакторы не путали кодировку
+
+src\tracks\ - треки: запись с GPS, сохраняемая приложением. Получение позиции - в src\GPS\.
+Файлы трека всегда парные: <имя>.xtrack (данные) и <имя>.xtrackh (заголовок).
+
+TrackFormat.kt - формат файлов.
+  TrackFields: TIME, LAT, LON, ELE, SPEED, COURSE, HACC, VACC, SACC, CACC, SAT;
+    ALL - канонический порядок записи.
+  TRACK_DATA_EXT, TRACK_HEADER_EXT.
+  TrackTime: format, parse, name (имя файла по местной минуте).
+  TrackHeader: границы, концы, времена, метаданные. complete = false - незавершённый,
+    в нём только начало. Видимость в заголовок НЕ пишется, она в data.xml.
+  TrackLine: спроецированные координаты для рисования, валидны индексы от from до size-1.
+  HeaderBuilder: add, build, buildOpen, count, firstLat, firstLon, startTime. openHeader.
+  TrackFiles: dataFile, headerFile, writeFieldLine, writeFix, writeHeader, readHeader,
+    buildHeader, readLine, forEachSample. Выбор потока и сериализацию делает вызывающий.
+
+TrackRecorder.kt - текущая запись, работает в потоке "gps".
+  line (хвост для рисования), current, name, hasFile, visible, pointCount,
+  start, stop (файл закрыт, трек НЕ завершён), restart (завершить и начать новый),
+  discard, adopt (продолжить незавершённый при старте), rename.
+  Файл данных создаётся после Settings.minPoints отсчётов, до того точки копятся в памяти.
+
+TrackStorage.kt - сохранённые треки. Заголовки в главном потоке, файлы в потоке "io".
+  io (исполнитель с перехватом фоновых сбоев), tracks, loaded, scrollTarget,
+  currentHighlighted, scrollToCurrent, focusCurrent,
+  collect (сверка data.xml с файлами; самый новый незавершённый уходит в TrackRecorder.adopt),
+  onLoaded, find, forget, onSaved, setVisible, delete, validName, rename, merge,
+  uniqueName, importFiles, onImported, duplicateOf, tracksInArea, nearestByStart,
+  focus, highlight.
+  RenameResult. TracksData: секция tracks - только имя и видимость.
+  TrackHeader.highlighted живёт только в памяти.
+
+TrackModules.kt - слои карты.
+  SavedTracksLayer, CurrentTrackLayer: draw, hitTest. Касание трека открывает TrackMapMenu
+    (в режиме выбора треков - toggleSelectedTrack).
+  PositionModule: принятая позиция, стрелка движения по GpsFix.isMoving, кольца расстояний.
+  MoverModule: карта едет за принятой позицией.
+
+TracksSheet.kt - список треков.
+  TracksListEditor: корневой редактор шторки треков (AppCommands.showTracks), тулбар "поделиться" всеми сохранёнными.
+  Меню трека, у текущего своё - CurrentTrackMenu. Смахивание - удаление. "Поделиться" во всех меню трека и в режиме
+    выбора - общее меню Storage\GeoDataShare.kt; у текущего трека без файла набор пуст.
+  Долгое нажатие - TrackSelectionEditor: чекбоксы, поделиться, объединить, удалить;
+    у текущего трека чекбокса нет. toggleSelectedTrack(name): касание трека на карте в этом режиме
+    переключает выбор и прокручивает список вместо меню, касание текущего ничего не делает.
+  TrackActions: goToStart, goToEnd, rename, renameCurrent, delete, deleteCurrent.
+  TrackMapMenu (трек, тронутый на карте), TrackPropertiesEditor.
+
+Отдача треков - провайдерами IGeoDataShare в Storage\ (XTravelShare, GpxShare).

@@ -1,0 +1,69 @@
+русский текст для того чтобы редакторы не путали кодировку
+
+src\Storage\ - всё, что превращает данные приложения в файлы и обратно: свой формат хранения
+и обмена, GPX, "поделиться". Экран выбора данных - в Commands\.
+
+DataIO.kt - свой формат и его чтение-запись. Самый большой файл каталога.
+  DATA_FILE, EXCHANGE_EXT (xtravel.zip), VERSION_FILE (version.txt - одна строка с номером; пишется рядом с data.xml
+    и в каталоге данных, и в архиве; загрузчик читает версию из него, без него - из data.xml),
+    DATA_VERSION (актуальная версия формата, пишется ещё и в корень data.xml и задаёт
+    устройство ВСЕГО каталога данных; меняешь формат - увеличивай и заводи импортер прежней версии).
+  IDataFormatImporter (version, upgrade(dir) - перевод каталога на месте, false - не смог), DataFormat1Importer
+    (всегда false), DataFormats (register в XTravelApp, upgrade), UnsupportedDataFormat.
+    DataIO.read: версия не та - импортер этой версии; нет его или отказ - UnsupportedDataFormat.
+    DataStore.init при этом ОЧИЩАЕТ ВЕСЬ AppDirs.base и сообщает "формат Х не поддерживается";
+    DataImport удаляет распакованный каталог принятого файла с тем же сообщением.
+  DataSet (что писать, собирается в главном потоке), LoadedData (накопитель импорта),
+  DataSelectors (all, points, routes, tracks - наборы с зависимостями),
+  DataIO (write, read, place, createExportFile, imagesDir, tracksDir),
+  DataStore (init, scheduleSave, saveNow, saveAfterPending),
+  DataImport (handle из intent, open из выбора файла; файлы по очереди),
+  помощники XmlPullParser: forEachChild, attr.
+
+  Каталог данных - AppDirs.base. Файл обмена xTravel-v<версия>-<yyyy-MMM-dd>.xtravel.zip - тот же каталог в zip:
+    version.txt номер версии формата
+    data.xml   <xtravel version="DATA_VERSION">, секции <points next-id>, <routes>, <notes> (элементы
+               text и picture прямо в секции), <tracks>, <global>
+    images\    картинки точек и маршрутов
+    tracks\    <имя>.xtrack и <имя>.xtrackh, существуют и передаются только вместе
+  Каждую секцию пишет и читает её владелец (IDataOwner в src\DataOwner.kt),
+    незнакомые секции пропускаются. При записи в чужой каталог секция сама копирует туда свои файлы.
+  Любое изменение точек, маршрутов или списка треков зовёт DataStore.scheduleSave;
+    файлы треков пишет TrackRecorder.
+  ЗАВИСИМОСТЬ НАРУЖУ: DataImport после распаковки зовёт DataSelect.openImport
+    из Commands\DataSheet.kt - конвейер импорта возвращает управление в интерфейс.
+
+GeoDataShare.kt - "поделиться" для любых данных. ЕДИНСТВЕННЫЙ путь отдачи данных наружу, своих не заводить.
+  GeoDataType (точки, маршруты, треки, METADATA - записки), DataSet.types().
+  IGeoDataShare: label, supportedTypes, limit (0 - без лимита), icon, checkData, count, share(set) - провайдер сам
+    создаёт и отправляет; файлы кладёт в AppDirs.share, каталог очищается при запуске (clearFiles в XTravelApp).
+  GeoDataShareManager: register (ПОРЯДОК = порядок пунктов меню, регистрация в XTravelApp), providers(set),
+    share (сверх лимита спрашивает, отправить ли первые; провайдер сам берёт сколько умеет), shareFiles.
+  PopupShareMenu(set, close): пункты провайдеров для набора, "(до Х)" при лимите. ShareMenuItem (пункт
+    контекстного меню, серый без провайдеров), ShareToolbarItem(onShared, set) - кнопка тулбара с меню.
+  Место вызова только собирает набор (DataSelectors, InfoOwner.shareSet) и зовёт одно из трёх.
+  Провайдеры: XTravelShare (XTravelFormat.kt), GpxShare (GpxExport.kt), TextPhotoShare (points\MetaInfoShare.kt),
+    YandexMapsSiteShare, DoubleGisShare, GeoAppShare (map\MapLinkShare.kt, geo последним).
+
+XTravelFormat.kt - XTravelShare: любой набор в своём формате обмена, поверх DataIO.createExportFile.
+  Имя архива всегда по версии формата и дню формирования, независимо от содержимого.
+
+GpxExport.kt - GpxShare: точки wpt, маршруты rte, треки trk (один trkseg, только стандартные поля) одним файлом.
+  Маршрут несёт места остановок в себе. Записки GPX не несёт.
+
+GpxImport.kt - чтение GPX.
+  GpxImport.read(context, uri, dir) -> LoadedData: точки, треки (имя транслитом или по дате),
+    маршруты. Формат ссылок на точки не знает: каждая rtept читается как точка (безымянная - GPX1,
+    GPX2...) и при применении импорта становится настоящей - своей или уже существующей.
+
+XFileProvider.kt
+  XFileProvider: типы .gpx и .xtravel, чтобы получатели не дописывали .bin.
+
+GlobalData.kt
+  GlobalValues, GlobalData - владелец секции global: состояние приложения, не принадлежащее
+    объектам. Пишется только при полном сохранении, экспорт его не несёт.
+
+Импорт: zip с data.xml идёт в дерево выбора, не zip пробуется как GPX.
+  Точка с теми же координатами (5 знаков) СЛИВАЕТСЯ с существующей, а не добавляется;
+  треки всегда добавляются как новые; одинаковый маршрут не добавляется.
+  Правила слияния точек - в points\ai_map.txt.

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- AppCompatActivity requires an AppCompat theme; language switching goes through AppCompat. -->
+    <style name="Theme.XTravel" parent="Theme.AppCompat.Light.NoActionBar" />
+</resources>

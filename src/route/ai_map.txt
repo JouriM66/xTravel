@@ -1,0 +1,77 @@
+русский текст для того чтобы редакторы не путали кодировку
+
+srcoute\ - маршруты: упорядоченный набор точек для посещения по очереди и найденные пути
+между ними. Сами пути строит подложка карты через Maps.engine.requestRoute.
+
+RouteModel.kt
+  TransportKind (пешком, велосипед, транспорт, машина, грузовой),
+  RouteGeometryState (активная, неактивная - больше состояний нет).
+  RouteEntry - одна остановка: id, pointId, place, name, description (всё из точки, своего не хранит),
+    geometries - геометрии участка, ведущего К ЭТОЙ остановке (у первой - от текущей позиции),
+    highlighted, caption, point, chosen, ways.
+    Точка входит в маршрут не более одного раза.
+  Route: id, наблюдаемые name и entries.
+
+RouteGeometry.kt
+  RouteManeuver, RouteStep.
+  RouteGeometry - один ответ движка от координат до координат: линия, метры, секунды, шаги.
+    virtual - прямая вместо ответа движка: не сохраняется и не считается вариантом.
+    draw (alpha null - прозрачность цвета из настроек), hitTest, nextStep,
+    trimmed (копия без пройденной части, длина и время уменьшены в той же доле).
+    Прогресс навигации только в памяти: firstDrawn, startPlace, advance, rewind, remaining.
+    advance ищет проекцию от предыдущего сегмента (PROGRESS_BEHIND) вперёд: при возврате прогресс откатывается.
+  routeStateColor, routeLineWidth, ROUTE_TOUCH_LIMIT, ROUTE_UNSELECTED_ALPHA, ROUTE_END_METERS.
+
+RouteStore.kt - менеджер маршрутов, он же IDataOwner секции routes и слушатель PointStore.
+  routes, selected, active (навигация, только в памяти), scrollTarget, requestedAt, travelSpeed,
+  ensureSelected, addPoint, addPlace, holds, removePoint, removeEntry, removeAt, focus, toggleHighlight,
+  beginReorder / moveEntry / endReorder, legStart, calculate, recalculate, abort,
+  choose / chooseOnly / nextWay, clearStops, sort, start, stop, onPosition, travelSeconds,
+  activeGeometry, activeTarget, distanceToTarget, distanceToEnd,
+  snapshot, stopPlace, onLoaded, applyImport, onPointsRemoved, onPointChanged, write, read.
+
+  МАРШРУТ НИКОГДА НЕ МЕНЯЕТ СТАТУСЫ ТОЧЕК. По настройке routeMarkPoints при добавлении включается
+    только автопосещение.
+  ВСЕ изменения списка идут через change, их последствия - через afterChange: вопрос askRouteChange,
+    если навигация идёт и изменение её затрагивает, а построение ручное; сброс геометрий изменившихся
+    участков (путь принадлежит паре мест, для которой запрошен), автосортировка и авторасчёт недостающих.
+    Менять список в обход change нельзя.
+  Удаление или перенос точки (слушатель PointStore) идут в afterChange так же. При навигации участок без
+    геометрии требует ответа askRebuild: перестроить или направление; закрытие без ответа останавливает.
+  Навигация идёт и запускается ТОЛЬКО когда геометрия есть у всех участков, хотя бы прямая.
+  start: без позиции GPS не запускается (модальное сообщение); геометрия первого участка, начало которой дальше
+    Settings.routeArrivalRadius от позиции, сбрасывается; недостающие - расчёт (авто или askStart)
+    с запуском по готовности, ошибка отменяет запуск. stop обрезает пройденное у текущего участка.
+  Запросы идут сериями: requestedAt - время отправки, abort и новая серия отбрасывают ответы прежней.
+    Повторный расчёт или запуск во время ожидания показывает showRouteWaiting.
+  onPosition зовёт RouteModule по GPS: ведёт проекцию по линии первого участка; прибытие - вход в радиус вокруг точки ИЛИ конца пути (путь может не доходить до точки),
+    больший из Settings.routeArrivalRadius и visitRadius точки с включённым автопосещением; остановка
+    убирается, опустевший маршрут останавливает навигацию. Скорость усредняется окном
+    ROUTE_SPEED_AVERAGING_POINTS, по ней travelSeconds. Автосортировка без навигации тоже здесь.
+  Файл: RouteRecord, RouteStopRecord - место и тексты точки. При чтении остановка привязывается
+    к точке в том же месте (findOrCreate), без неё точка создаётся; безымянная остановка чужого
+    формата получает имя stopPlace: тип формата и номер (GPX1, xTravel1).
+
+RouteModule.kt - слой карты.
+  draw: геометрии выбранного маршрута, неактивные снизу, активная сверху; при выделенной строке
+    остальные участки приглушаются ROUTE_UNSELECTED_ALPHA.
+  hitTest: касание неактивной делает её активной (при навигации - после вопроса), после чего
+    в любом случае открывается шторка маршрута с подсветкой строки остановки.
+  Подписан на GPS, зовёт RouteStore.onPosition через Handler главного потока: подписка
+    приходит в потоке GPS, а onPosition меняет список остановок и геометрии, по которым
+    в это же время идёт рисование. Звать onPosition из другого потока нельзя.
+
+RouteSheet.kt - шторка маршрута.
+  Тулбар: транспорт, запустить или остановить навигацию, рассчитать, сортировать, поделиться (маршрут с точками
+    остановок через общее меню Storage\GeoDataShare.kt), удалить точки (askClear).
+  Строка остановки: булавка с единым меню точки (points\PointMenus.kt PointPopupMenu, источник ROUTE), иконка вариантов пути (ROUTE_WAYS_ICON и цвета ROUTE_WAY_*
+    из utils\Consts.kt) с переключением по кругу, название, длина и время пути (при навигации -
+    по скорости), ручка перетаскивания, смахивание - удаление. Нажатие на название выделяет строку,
+    повторное снимает выделение.
+  Диалоги: askRouteStop (единый вопрос остановки, его же зовёт RouteFollow), askRouteChange (пересчитать и продолжить, остановить, отмена), askStart (рассчитать,
+    направления, отмена), askRebuild (перестроить, направление), showRouteWaiting (прервать).
+
+Отдача маршрутов - провайдерами IGeoDataShare в Storage\ (GpxShare, XTravelShare) и map\MapLinkShare.kt.
+  В своём формате маршруты уезжают внутри общего набора через DataSelectors.routes.
+
+Элемент верхнего тулбара при активном маршруте - RouteFollow, лежит в Toolbars	opFollow.kt.

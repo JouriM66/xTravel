@@ -71,7 +71,8 @@ jobs:
           SDK=$(grep -E '^\s*compileSdk\s*=' build.gradle.kts | head -n1 | tr -dc '0-9')
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKMANAGER" --licenses > /dev/null || true
-          "$SDKMANAGER" "platforms;android-$SDK"
+          # С API 37 пакет платформы называется android-NN.0
+          "$SDKMANAGER" "platforms;android-$SDK.0" || "$SDKMANAGER" "platforms;android-$SDK"
 
       - uses: gradle/actions/setup-gradle@v5
 

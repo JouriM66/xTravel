@@ -65,12 +65,13 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - uses: android-actions/setup-android@v3
-
+      # Android SDK предустановлен в образе ubuntu, ставится только платформа compileSdk
       - name: Install SDK platform
         run: |
           SDK=$(grep -E '^\s*compileSdk\s*=' build.gradle.kts | head -n1 | tr -dc '0-9')
-          sdkmanager "platforms;android-$SDK"
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "platforms;android-$SDK"
 
       - uses: gradle/actions/setup-gradle@v5
 

@@ -45,6 +45,9 @@ src\notes\    записки: метаинформация (MetaInfo) без п�
 res\          манифест; res\app - ресурсы приложения, res\ext - шрифты, свои иконки, таблицы.
 Abs\          вышедшее из употребления. Не читать.
 output\, dist\, appKey\ - сборка, готовые пакеты, ключ подписи.
+.github\workflows\build.yml  CI: сборка при пуше в main, GitHub Release ручным запуском. Версию берёт из version.properties,
+              описание релиза - раздел "## versionName (versionCode)" из NEWS.md; DEBUG_ABI= (все архитектуры).
+              Зависит от пути output\build\outputs\apk и от строки compileSdk в build.gradle.kts.
 
 РЕСУРСЫ
 

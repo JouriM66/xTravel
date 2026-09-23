@@ -1,0 +1,102 @@
+# русский текст для того чтобы редакторы не путали кодировку
+# Сборка debug и release под все архитектуры.
+#   Пуш в main - пакеты прикладываются к запуску (вкладка Actions, раздел Artifacts).
+#   Ручной запуск с publish - дополнительно GitHub Release: версия из version.properties,
+#   описание - раздел "## versionName (versionCode)" из NEWS.md. Повторный выпуск той же версии - ошибка.
+
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish GitHub Release
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Read version
+        run: |
+          prop() { grep -E "^$1=" version.properties | head -n1 | cut -d= -f2- | tr -d '\r[:space:]'; }
+          NAME=$(prop versionName)
+          CODE=$(prop versionCode)
+          if [ -z "$NAME" ] || [ -z "$CODE" ]; then echo "::error::versionName/versionCode not found in version.properties"; exit 1; fi
+          echo "VERSION_NAME=$NAME" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=$CODE" >> "$GITHUB_ENV"
+          echo "TAG=v$NAME.$CODE" >> "$GITHUB_ENV"
+          echo "Version $NAME ($CODE)"
+
+      # Проверки выпуска до сборки, чтобы не тратить время на заведомо отклоняемый релиз
+      - name: Check release
+        if: env.PUBLISH == 'true'
+        run: |
+          if [ "$GITHUB_REF_NAME" != "main" ]; then echo "::error::Release is published only from main"; exit 1; fi
+          if gh release view "$TAG" > /dev/null 2>&1; then echo "::error::Release $TAG already exists, increase versionCode"; exit 1; fi
+          HEADER="## $VERSION_NAME ($VERSION_CODE)"
+          tr -d '\r' < NEWS.md | awk -v h="$HEADER" '
+            $0 == h { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' > release-notes.md
+          if ! grep -q '[^[:space:]]' release-notes.md; then echo "::error::NEWS.md has no section '$HEADER'"; exit 1; fi
+          printf '\n---\nThe *-debug.apk build contains additional functions for testing.\n' >> release-notes.md
+          cat release-notes.md
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install SDK platform
+        run: |
+          SDK=$(grep -E '^\s*compileSdk\s*=' build.gradle.kts | head -n1 | tr -dc '0-9')
+          sdkmanager "platforms;android-$SDK"
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      # Пустой DEBUG_ABI - debug-пакет со всеми архитектурами
+      - name: Build
+        run: |
+          echo "DEBUG_ABI=" > local.properties
+          bash ./gradlew assembleDebug assembleRelease
+
+      - name: Collect packages
+        run: |
+          mkdir -p packages
+          for TYPE in debug release; do
+            APK=$(find output/build/outputs/apk/$TYPE -name '*.apk' | head -n1)
+            if [ -z "$APK" ]; then echo "::error::$TYPE apk not found"; exit 1; fi
+            cp "$APK" "packages/xTravel-$VERSION_NAME-$VERSION_CODE-$TYPE.apk"
+          done
+          ls -l packages
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: xTravel-${{ env.VERSION_NAME }}-${{ env.VERSION_CODE }}
+          path: packages/*.apk
+
+      - name: Publish release
+        if: env.PUBLISH == 'true'
+        run: |
+          gh release create "$TAG" packages/*.apk --target "$GITHUB_SHA" \
+            --title "$VERSION_NAME ($VERSION_CODE)" --notes-file release-notes.md

@@ -14,8 +14,10 @@ val localProps = Properties().apply {
     if (f.exists()) f.inputStream().use { load(it) }
 }
 
-// CPU architecture of the device used for debugging. Release keeps every architecture.
-val debugAbi: String = localProps.getProperty("DEBUG_ABI") ?: "arm64-v8a"
+/** Архитектура устройства отладки для debug-сборки; пустое значение - все архитектуры (так собирает CI).
+    Release всегда содержит все архитектуры.
+*/
+val debugAbi: String = (localProps.getProperty("DEBUG_ABI") ?: "arm64-v8a").trim()
 
 // Version is edited manually in version.properties.
 val versionProps = Properties().apply {
@@ -75,9 +77,11 @@ android {
         // Debug package carries native libraries for the debug device only, see debugAbi.
         // The same signing key as release, so debug and release packages replace each other.
         debug {
-            ndk {
-                abiFilters.clear()
-                abiFilters.add(debugAbi)
+            if (debugAbi.isNotEmpty()) {
+                ndk {
+                    abiFilters.clear()
+                    abiFilters.add(debugAbi)
+                }
             }
             signingConfig = signingConfigs.getByName("release")
         }

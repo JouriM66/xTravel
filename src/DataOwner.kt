@@ -23,8 +23,9 @@ interface IDataOwner {
   fun write(set: DataSet, dir: File, xml: XmlSerializer) {}
 
   /** Читает свою секцию в накопитель импорта. Парсер стоит на открывающем теге секции,
-      ссылки на файлы разрешаются относительно dir. Заглушка поглощает секцию целиком. */
-  fun read(parser: XmlPullParser, dir: File, result: LoadedData) { parser.forEachChild {} }
+      ссылки на файлы разрешаются относительно dir. dir = null - файлы в источнике импорта и ещё не распакованы:
+      ссылки принимаются без проверки. Заглушка поглощает секцию целиком. */
+  fun read(parser: XmlPullParser, dir: File?, result: LoadedData) { parser.forEachChild {} }
 
   /** Ищет текст в своих данных. */
   fun search(text: String): List<DataFound> = emptyList()
@@ -50,7 +51,7 @@ object DataOwnerManager {
   }
 
   /** Отдаёт секцию её владельцу; незнакомую секцию поглощает. */
-  fun readSection(tag: String, parser: XmlPullParser, dir: File, result: LoadedData) {
+  fun readSection(tag: String, parser: XmlPullParser, dir: File?, result: LoadedData) {
     val owner = owners.firstOrNull { it.tag == tag }
     if (owner != null) owner.read(parser, dir, result) else parser.forEachChild {}
   }

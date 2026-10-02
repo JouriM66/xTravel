@@ -30,9 +30,6 @@ object TextSearch {
     }
   }
 
-  /** Uses Russian data because GPX filenames must not depend on the device language. */
-  val TRANSLIT: Map<Char, String> get() = tables["ru"]?.translit.orEmpty()
-
   /** Builds normalized, alternate-layout and transliterated search variants. */
   fun variants(text: String): List<String> {
     val original = text.trim().lowercase(Locale.ROOT)

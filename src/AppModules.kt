@@ -16,7 +16,6 @@ object AppModules {
   */
   val all: List<IAppModule> = listOf(
     AppClock,
-    GridModule,
     CrosshairModule,
     ScaleBarModule,
     SavedTracksLayer,

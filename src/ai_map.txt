@@ -11,7 +11,7 @@ XTravelApp.kt
   XTravelApp: Application. Обработчик падений и инициализация всего: AppSession, Settings,
     YandexMapEngine, AppDirs, Maps, GpsDataManager, DataStore.
     Здесь же регистрации, определяющие состав функционала: владельцы данных в DataOwnerManager,
-    YandexSearchEngine в GeoSearchManager, фильтры в GpsDataManager,
+    YandexSearchEngine в GeoSearchManager, YandexRoutes в RouteBuilders, фильтры в GpsDataManager,
     поставщики лицензий в LicenseManager (Commands\AboutScreen.kt), провайдеры "поделиться" в GeoDataShareManager,
     импортеры версий формата данных в DataFormats. Здесь же очистка каталога отправки при запуске. Новый функционал такого рода подключается отсюда.
 
@@ -30,6 +30,8 @@ AppSession.kt
     attach, detach, ensureRunning, exit, message, toast.
     При restartNeeded exit завершает процесс, чтобы MapKit взял новый ключ.
   AppDirs: каталог данных с запасным вариантом. tracks, images, share - геттеры создают каталог.
+    ANDROID_DIRS (files, cache - служебные каталоги Android внутри base, не данные), dataContent() - base без них.
+    Уборка, сохранение и очистка несовместимых данных берут этот список отсюда.
 
 AppModule.kt - абстракция модуля и слоя карты.
   IAppModule: start, stop, draw, hitTest. Правило потоков - в комментарии интерфейса.
@@ -42,6 +44,7 @@ AppModules.kt
 
 DataOwner.kt - абстракция подсистемы, владеющей своими данными. Сам формат - в Storage\.
   IDataOwner: tag (своя секция в data.xml), write, read, search. Все с заглушками.
+    read получает dir = null, когда data.xml читается из источника импорта: файлов на диске нет, ссылки не проверять.
   DataFound: результат поиска и действие, показывающее источник.
   DataOwnerManager: register, write, readSection, search. Реализуют PointsData, TracksData,
     NotesData, GlobalData, RouteStore. Новый тип данных подключается через этот интерфейс.
@@ -85,13 +88,21 @@ BottomSheet.kt - единственная шторка и каркас реда�
     иначе open при отпустившем страже зацикливается через close { open }.
 
 ModalScreen.kt
-  ModalScreen: полноэкранное модальное окно. ownerId, open, close, Host.
-    "Назад" Host закрывает без вопросов; окно со стражем правок ставит свой BackHandler внутри содержимого.
+  ModalScreen: стек полноэкранных модальных окон, виден верхний. ownerId (верхнего), open (новый стек),
+    push (поверх, закрытие возвращает к прежнему), close (снимает верхнее), Host.
+    onClose окна (open, push) зовётся при его закрытии, в том числе при сбросе стека через open, но не при перекрытии.
+    "Назад" Host снимает верхнее без вопросов; окно со стражем правок ставит свой BackHandler внутри содержимого.
+    Нижнее окно при push выходит из композиции: его remember-состояние (прокрутка) не сохраняется.
     Заголовок окна - utils ModalHeader.
 
 Overlays.kt - всё, что поверх карты и шторки.
   AppDialog: единственный диалог. message (с OK, ждёт закрытия предыдущего, можно звать
-    из фонового потока), confirm, confirmPlural, input, show, close.
+    из фонового потока), confirm, confirmPlural, input (onCancel - отмена ввода), show, close,
+    progress(title, icon, state, dangerCancel, onCancel) - окно хода длительной операции, dangerCancel - красная "Отмена";
+    закрывает его по завершении вызывающий.
+    busy(title, icon) - модальное окно короткой операции без отмены и кнопок, "назад" не закрывает; закрывает вызывающий,
+    работу начинать через utils afterFrames, иначе окно не успеет появиться.
+  TaskProgress: ход для progress (cancelled, total, done), реализует IExportProgress из Storage\DataIO.kt.
     Открытый диалог держит UserActivity.hold.
   MapPopup: меню в точке карты. marker - место открытого меню, его рисует TapMarkerModule.
   FloatingBar: временный тулбар с отменой владельца. isOpen, show, close, cancel.
@@ -100,11 +111,19 @@ Overlays.kt - всё, что поверх карты и шторки.
     Данные приложения отдаются только через провайдеры Storage\GeoDataShare.kt, не отсюда напрямую.
 
 SettingsScreen.kt
-  SettingsScreen: неподвижный заголовок (ModalHeader) и прокручиваемые группы настроек; редакторы строк -
-    число, переключатель, комбобокс, цвет с палитрой, ключ со справкой. Список фильтров GPS строится из реестра GpsDataManager.
+  SettingsScreen: неподвижный заголовок (ModalHeader) и прокручиваемые группы настроек.
+    Список фильтров GPS строится из реестра GpsDataManager, построитель маршрутов - из RouteBuilders.
+    "Изображение карты" (группа "Общие"): выбор MapType и кнопка его настроек. Выбор ОТЛОЖЕННЫЙ - ставится
+    через Maps.select в settingsClosed (onClose окна, AppCommands.openSettings), а не при смене в списке.
+    Меню "Карта" переключает тип сразу, настроек там нет.
+  openSettingsPage(ownerId, title, rows): такая же страница поверх текущего окна (ModalScreen.push) -
+    настройки поставщиков карты (MapType.settings) и построителей маршрутов (IRouteBuilder.settings).
+  Редакторы строк internal, для страниц поставщиков: Section, SubSection (подгруппа, заголовок мельче), ComboRow (onMore/hasMore - кнопка настроек справа, без onMore серая),
+    SwitchRow, ModeRow, ChoiceRow, KeyRow (ключ со справкой), NumberRow, ColorRow.
 
 MainMenu.kt: главное меню и подменю. Поделиться, Импорт, Очистить (все три открывают дерево
-  Commands\DataSheet.kt), Уборка данных, настройки, о программе, язык, тип карты, выход.
+  Commands\DataSheet.kt), Сетевой доступ (Commands\NetAccess.kt), Уборка данных, настройки, о программе, язык, выход.
+  Подменю "Карта": только переключение типа карты, сразу.
   Отладочное подменю только в debug-сборке: время приложения и эмуляция позиции.
 
 SearchSheet.kt
@@ -129,7 +148,7 @@ AppCommand.kt - команды интерфейса.
   IAppCommand: available (наблюдаемая), execute.
   AppCommands: showPoints, showTracks, showRoute, showNotes, search, openSettings, openAbout,
     selectMapType, selectLanguage, nextMapDirection, followGps, shareData, clearData,
-    checkFiles, saveSettings, exit.
+    checkFiles, netAccess, saveSettings, exit.
   CommandMenuItem: пункт меню, следящий за доступностью и закрывающий меню перед вызовом.
 
 НАСТРОЙКИ
@@ -139,16 +158,16 @@ Settings.kt - ВСЕ настройки приложения. Смотреть �
     Значение наблюдаемое, пишется в SharedPreferences, onChange зовётся после записи.
   Settings.export(): key=value для "Save settings", БЕЗ ключей MapKit и Геокодера.
   Состав: useGps, showSpeed, keepScreenOn, notifyMode, askExternalSearch, imageQuality;
-    mapType, mapDirection, map3d, mapkitKey, geocoderKey, geocoderResults;
+    mapType, vectorMapFile, vectorMapStyle, mapDirection, map3d, mapkitKey, geocoderKey, geocoderResults;
     autoPosition, rings, ringStepValue;
     filterMode, filterAccuracy, filterStationarySpeed, filterMinDistance, filterMaxSpeed;
     minPoints, tailPoints, currentTrackWidth/Color, savedTrackWidth/Color;
     цвета и размеры точек - pointIndependentColor, pointPlannedColor, pointActiveColor,
     pointVisitedColor, pointAlarmColor, availabilityOpenColor, availabilityClosedColor,
     timeToOpenColor, timeToCloseColor, pointNameSize, pointTimeSize;
-    routeTransport, routeMarkPoints, routeActiveColor, routeInactiveColor, routeAutoCalculate, routeAutoSort,
+    routeTransport, routeBuilder (id из RouteBuilders), routeMarkPoints, routeActiveColor, routeInactiveColor, routeAutoCalculate, routeAutoSort,
     routeArrivalRadius, routeShowManeuver;
-    miuiConfirmed.
+    uploadFolder (каталог приёма сетевого доступа), miuiConfirmed.
 
 Languages.kt
   AppLanguage, Languages: all (English, Russian), systemLocale, current, select, init.
@@ -156,7 +175,8 @@ Languages.kt
 
 СЕТЬ
 
-NetworkRequestManager.kt - ЕДИНСТВЕННОЕ место HTTP-запросов, своих не заводить.
+NetworkRequestManager.kt - ЕДИНСТВЕННОЕ место исходящих HTTP-запросов, своих не заводить.
+  Входящие (сервер сетевого доступа) - Commands\NetAccess.kt.
   INetworkListener: onNetworkResult, onNetworkError.
   NetworkRequestManager.request (свой поток "net", ответ листенеру в главном),
     NetworkRequestManager.fetch (блокирующий, для тех, кто уже в фоне).

@@ -17,10 +17,10 @@ private const val HIT_DISTANCE_DP = 12
 // How close to a track line a tap counts as a hit, in pixels.
 private fun hitLimit(viewport: MapViewport) = HIT_DISTANCE_DP * viewport.density
 
-// Draws a track line.
+// Draws a track line. A line in another projection is waiting for its conversion and is not drawn.
 private fun MapDrawContext.drawTrack(line: TrackLine, widthDp: Int, color: Color) {
-  if (widthDp <= 0 || line.size - line.from < 2) return
   val view = viewport
+  if (widthDp <= 0 || line.size - line.from < 2 || line.projection !== view.projection) return
   with(scope) {
     val width = widthDp.dp.toPx()
     val path = Path()
@@ -33,10 +33,10 @@ private fun MapDrawContext.drawTrack(line: TrackLine, widthDp: Int, color: Color
   }
 }
 
-// Tap on a track line opens the menu of this track; a name of null is the track being recorded now.
-private class TrackObject(private val name: String?) : ISelectableMapObject {
+// Tap on a track line opens the menu of this track; an id of null is the track being recorded now.
+private class TrackObject(private val id: String?) : ISelectableMapObject {
   override fun selected(screen: Offset) {
-    if (!toggleSelectedTrack(name)) MapPopup.show(screen) { TrackMapMenu(name) { MapPopup.close() } }
+    if (!toggleSelectedTrack(id)) MapPopup.show(screen) { TrackMapMenu(id) { MapPopup.close() } }
   }
 }
 
@@ -59,6 +59,7 @@ object SavedTracksLayer : IAppModule {
   override fun draw(context: MapDrawContext) {
     val color = Color(Settings.savedTrackColor.value)
     val width = Settings.savedTrackWidth.value
+    TrackStorage.useProjection(context.viewport.projection)
     TrackStorage.loaded.values.forEach { context.drawTrack(it, width, color) }
   }
 
@@ -70,8 +71,8 @@ object SavedTracksLayer : IAppModule {
   */
   override fun hitTest(screen: Offset, viewport: MapViewport): ISelectableMapObject? {
     if (Settings.savedTrackWidth.value <= 0) return null
-    val name = TrackStorage.loaded.entries.firstOrNull { nearLine(it.value, screen, viewport, hitLimit(viewport)) }?.key ?: return null
-    return TrackObject(name)
+    val id = TrackStorage.loaded.entries.firstOrNull { nearLine(it.value, screen, viewport, hitLimit(viewport)) }?.key ?: return null
+    return TrackObject(id)
   }
 }
 
@@ -92,6 +93,7 @@ object CurrentTrackLayer : IAppModule {
   * @return Unit; draws through the supplied MapDrawContext.
   */
   override fun draw(context: MapDrawContext) {
+    TrackRecorder.useProjection(context.viewport.projection)
     if (!TrackRecorder.visible) return
     context.drawTrack(TrackRecorder.line, Settings.currentTrackWidth.value, Color(Settings.currentTrackColor.value))
   }

@@ -5,12 +5,22 @@ HTTP идёт через NetworkRequestManager (src\NetworkRequestManager.kt), �
 
 GeoSearchManager.kt
   GeoAnswer(point, name, description): любое поле может отсутствовать; valid.
-  IGeoSearchEngine: mustBeAsync, byPosition, byText.
-  GeoSearchManager: реестр движков. register, byPosition, byText - собирают ответы
-    всех движков и отдают ОДИН колбэк в главном потоке.
+  IGeoSearchEngine: mustBeAsync, configured, byPosition, byText.
+  GeoSearchManager: реестр движков, выбора пользователем нет. register, byPosition, byText - опрашивают
+    все настроенные (configured) движки и отдают ОДИН колбэк в главном потоке. Ни одного настроенного -
+    ошибка geocoder_key_missing через Notify. Повторы текста (название и описание без учёта регистра)
+    убираются; byText сортирует по алфавиту, byPosition сохраняет порядок (первый ответ - самый точный).
 
 YandexSearch.kt
-  YandexSearchEngine: HTTP API Яндекса. Ключ и число результатов из настроек,
+  YandexSearchEngine: HTTP API Яндекса. Ключ и число результатов из настроек (их редактор - map\yandex\YandexSettings.kt),
     язык системный из допустимых или en_US, ошибки через Notify, licenseInfo только при ключе.
   StreetPrefixes.strip: убирает служебные слова из начала названий.
     Таблица по языкам - res\ext\raw\street_prefixes.txt.
+
+VectorSearch.kt
+  VectorSearchEngine: без сети, всегда configured (встроенный архив есть всегда), поэтому сообщение
+    geocoder_key_missing больше не появляется. Данные - слой places архивов встроенной карты (map\vector),
+    встроенного и пользовательского. Индекс мест: при первом запросе в потоке геокодера (долго), затем
+    cacheDir\places-*.tsv; ключ - архив и его размер. Уровень индекса - 12 или максимальный уровень архива.
+  byText - поиск подстроки во всех вариантах названия; byPosition - ближайшие населённые пункты и районы до 30 км.
+  Регистрируется в XTravelApp ПОСЛЕ Яндекса: имя точки в byPosition берётся из первого ответа.

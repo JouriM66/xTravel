@@ -502,10 +502,7 @@ object RouteStore : IDataOwner, IPointListener {
         onFailed()
       }
     }
-    if (!Maps.engine.requestRoute(from, to, Settings.routeTransport.value, listener)) {
-      Notify.error(R.string.route_not_supported)
-      onFailed()
-    }
+    if (!RouteBuilders.request(from, to, Settings.routeTransport.value, listener)) onFailed()
   }
 
   /**
@@ -887,7 +884,7 @@ object RouteStore : IDataOwner, IPointListener {
   * @param result Mutable import accumulator receiving parsed records.
   * @return Unit; consumes the current XML section.
   */
-  override fun read(parser: XmlPullParser, dir: File, result: LoadedData) {
+  override fun read(parser: XmlPullParser, dir: File?, result: LoadedData) {
     parser.forEachChild { name -> if (name == "route") result.routes += readRoute(parser) }
   }
 

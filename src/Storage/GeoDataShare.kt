@@ -19,6 +19,8 @@ import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.res.stringResource
 import android.util.Log
 import java.io.File
+import java.util.concurrent.CancellationException
+import kotlin.concurrent.thread
 
 enum class GeoDataType { POINTS, ROUTES, TRACKS, METADATA } /** Типы данных набора для "поделиться"; METADATA - записки */
 
@@ -76,11 +78,27 @@ object GeoDataShareManager {
     AppDialog.confirmPlural(R.plurals.share_limit_confirm, limit) { provider.share(set) }
   }
 
-  /** Общий путь файловых провайдеров: make создаёт файлы в потоке "io", отправка - в главном, сбой - сообщением */
-  fun shareFiles(mimeType: String, text: String = "", make: () -> List<File>) {
-    TrackStorage.io.execute {
-      val files = runCatching(make).onFailure { Log.w("xTravel", "Share data not prepared", it) }.getOrNull()
-      main.post { if (files.isNullOrEmpty()) Notify.error(R.string.export_failed) else Sharing.share(files, mimeType, text) }
+  var busy by mutableStateOf(false) /** Идёт подготовка файлов; новая отправка до её конца не начинается */
+    private set
+
+  /** Общий путь файловых провайдеров: make создаёт файлы в своём потоке "share" (не "io"), пока открыто модальное
+      окно хода с отменой; отправка - в главном, сбой - сообщением. Главный поток.
+  */
+  fun shareFiles(mimeType: String, text: String = "", make: (IExportProgress) -> List<File>) {
+    if (busy) return
+    busy = true
+    val progress = TaskProgress()
+    AppDialog.progress(R.string.share_preparing, Icons.Outlined.Share, progress)
+    thread(name = "share") {
+      val files = runCatching { make(progress) }.onFailure {
+        if (it !is CancellationException) Log.w("xTravel", "Share data not prepared", it)
+      }.getOrNull()
+      main.post {
+        busy = false
+        if (progress.cancelled) return@post
+        AppDialog.close()
+        if (files.isNullOrEmpty()) Notify.error(R.string.export_failed) else Sharing.share(files, mimeType, text)
+      }
     }
   }
 

@@ -1,0 +1,46 @@
+русский текст для того чтобы редакторы не путали кодировку
+
+src\map\vector\ - встроенная векторная карта без сети: архивы PMTiles с тайлами MVT по схеме Protomaps basemaps.
+Тип карты MapType.NONE (пункт "Встроенный"), движок VectorMapEngine. Библиотек нет, всё своё.
+Проекция WebMercatorProjection - в src\map\WebMercator.kt. Те же архивы читает геокодер GeoCode\VectorSearch.kt.
+
+VectorMapEngine.kt
+  VectorMapEngine: IMapEngine. Проекция WebMercatorProjection, calibration нет (экран по формуле MapViewport).
+    Backdrop - Canvas, рисует VectorTiles; settingsChanged - сброс тайлов (зовёт Maps при смене vectorMapFile, vectorMapStyle).
+  VectorMapSettings.Rows: строки редактора настроек (MapType.NONE.settings) - файл карты и оформление.
+    Файл выбирается системным диалогом и читается на месте по content Uri с постоянным разрешением, не копируется;
+    негодный файл не принимается.
+  VectorMapLicense: OpenStreetMap и Protomaps для "О программе", регистрируется в XTravelApp.
+
+VectorTiles.kt
+  VectorTiles: кэш bitmap-тайлов сетки 256 dp (уровень - округлённый масштаб камеры), фоновый поток "vmap", draw.
+    Пока тайла нет, показывается часть предка или потомки. revision - наблюдаемый счётчик готовых тайлов.
+    Архивы: встроенный res\assets\world.pmtiles (assets, БЕЗ СЖАТИЯ - noCompress в build.gradle.kts) и пользовательский.
+    Тайл внутри границ пользовательского - только он; на краю - встроенный, поверх пользовательский; вне - встроенный.
+    Данные берутся на уровень ниже тайла сетки (тайл MapLibre 512 = два наших 256), выше максимума архива - растяжение.
+  TileImage: bitmap и подписи, точки которых в тайле.
+
+TileRenderer.kt
+  VectorLayer (порядок = порядок рисования), RoadClass, VectorFeature, LabelKind, MapLabel.
+  PreparedTile.prepare: тайл MVT -> пути Android по слоям и подписи places; язык подписей name:<язык интерфейса>.
+  TileRenderer.render: тайл сетки из подготовленных тайлов; правила - упрощённый base_layers.ts Protomaps,
+    масштаб правил = уровень тайла - 1, ширины в dp.
+
+MapLabels.kt
+  LabelPainter: подписи стран, населённых пунктов, областей, районов - горизонтально, без наложений, по приоритету;
+    attribution - "© OpenStreetMap" в углу (условие ODbL).
+
+MapStyle.kt
+  MapStyleKind: оформления, ресурсы res\ext\raw\map_style_*.txt (key=value, цвета flavors.ts Protomaps).
+  MapStyle: color(name, fallback), has, load.
+  styleValue, styleFraction (интерполяция MapLibre по масштабу), blendColor.
+
+PmTiles.kt
+  ChannelBytes: произвольный доступ к файлу (asset, uri), позиционное чтение потокобезопасно.
+    BUILTIN_MAP - имя встроенного архива в assets, единственное место.
+  PmTiles: архив v3 - заголовок, каталоги, tile(z, x, y) распакованным; только тип MVT. tileId - кривая Гильберта.
+    forEachTile(z) - обход всех тайлов уровня (серия одинаковых - один раз); fileSize, границы, minZoom, maxZoom.
+
+Mvt.kt
+  MvtTile.parse(data, only) - only: разобрать только эти слои. MvtLayer (attr, string, number, flag),
+  MvtFeature (geometry), ProtoReader.

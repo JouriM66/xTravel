@@ -26,7 +26,7 @@ object GlobalData : IDataOwner {
     xml.endTag(null, tag)
   }
 
-  override fun read(parser: XmlPullParser, dir: File, result: LoadedData) {
+  override fun read(parser: XmlPullParser, dir: File?, result: LoadedData) {
     var visible = true
     parser.forEachChild { child ->
       if (child == "track") visible = parser.attr("visible")?.toBooleanStrictOrNull() ?: true

@@ -3,9 +3,12 @@ package com.jm.xtravel
 
 import androidx.annotation.StringRes
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.height
@@ -17,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
@@ -264,4 +268,14 @@ fun rememberAppIcon(packageName: String, fallback: ImageVector): Painter {
   }
   val vector = rememberVectorPainter(fallback)
   return remember(bitmap) { bitmap?.let { BitmapPainter(it) } } ?: vector
+}
+
+/** Группа элементов в рамке во всю ширину, элементы столбиком */
+@Composable
+fun FramedGroup(content: @Composable ColumnScope.() -> Unit) {
+  Column(
+    Modifier.fillMaxWidth().border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp)).padding(12.dp),
+    verticalArrangement = Arrangement.spacedBy(8.dp),
+    content = content
+  )
 }

@@ -18,10 +18,7 @@ import java.io.File
 object FilesCheck : IAppCommand {
 
   // Files of the application itself: they belong to no element.
-  private val OWN_FILES = setOf(DATA_FILE, "$DATA_FILE.tmp")
-
-  // Directories of the data directory that belong to Android, not to the application.
-  private val FOREIGN_DIRS = setOf("files", "cache")
+  private val OWN_FILES = setOf(DATA_FILE, "$DATA_FILE.tmp", VERSION_FILE)
 
   private val main = Handler(Looper.getMainLooper())
 
@@ -31,7 +28,7 @@ object FilesCheck : IAppCommand {
   */
   override fun execute() {
     val set = DataSelectors.all()
-    val recording = TrackRecorder.current?.name
+    val recording = TrackRecorder.current?.id?.takeIf { TrackRecorder.hasFile }
     TrackStorage.io.execute {
       val used = usedFiles(set, recording)
       val files = mutableListOf<File>()
@@ -46,10 +43,7 @@ object FilesCheck : IAppCommand {
     val files = mutableListOf<File>()
     OWN_FILES.forEach { files += File(AppDirs.base, it) }
     PointStore.usedPictures(set).forEach { files += PointStore.pictureFile(it) }
-    (set.tracks.map { it.name } + listOfNotNull(recording)).forEach { name ->
-      files += TrackFiles.dataFile(name)
-      files += TrackFiles.headerFile(name)
-    }
+    (set.tracks.map { it.id } + listOfNotNull(recording)).forEach { files += TrackFiles.dataFile(it) }
     return files.map { it.absolutePath }.toSet()
   }
 
@@ -57,7 +51,7 @@ object FilesCheck : IAppCommand {
   private fun scan(dir: File, files: MutableList<File>, top: Boolean) {
     dir.listFiles().orEmpty().forEach { entry ->
       when {
-        entry.isDirectory && top && entry.name in FOREIGN_DIRS -> {}
+        entry.isDirectory && top && entry.name in AppDirs.ANDROID_DIRS -> {}
         entry.isDirectory -> {
           scan(entry, files, top = false)
           if (entry.listFiles().orEmpty().isEmpty()) entry.delete()

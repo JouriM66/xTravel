@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import androidx.activity.compose.BackHandler
 import androidx.annotation.DrawableRes
 import androidx.annotation.PluralsRes
@@ -26,6 +27,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.OutlinedTextField
@@ -34,6 +36,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -52,6 +55,7 @@ import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.launch
 import java.io.File
@@ -219,11 +223,21 @@ object AppDialog {
   * @param onOk Receives trimmed input; return a string resource ID to display an error, or null to accept and close.
   * @return Unit; a nonnull error resource keeps the dialog open.
   */
-  fun input(@StringRes title: Int, initial: String, icon: ImageVector = Icons.Outlined.Edit, onOk: (String) -> Int?) = show {
+  fun input(
+    @StringRes title: Int,
+    initial: String,
+    icon: ImageVector = Icons.Outlined.Edit,
+    onCancel: () -> Unit = {}, // отмена ввода: кнопка, "назад" или касание вне окна
+    onOk: (String) -> Int?
+  ) = show {
+    val cancel = {
+      close()
+      onCancel()
+    }
     var text by remember { mutableStateOf(initial) }
     var error by remember { mutableStateOf<Int?>(null) }
     AlertDialog(
-      onDismissRequest = ::close,
+      onDismissRequest = cancel,
       icon = { Icon(icon, contentDescription = null) },
       title = { Text(stringResource(title)) },
       text = {
@@ -251,7 +265,53 @@ object AppDialog {
           if (error == null) close()
         }
       },
-      dismissButton = { CancelButton(::close) }
+      dismissButton = { CancelButton(cancel) }
+    )
+  }
+
+  /** Модальное окно хода длительной операции: полоса и "Х из Y (N%)" по TaskProgress. "Отмена" и "назад"
+      ставят cancelled, закрывают окно и зовут onCancel; закрыть окно по завершении - дело вызывающего.
+      dangerCancel - красная кнопка отмены: прерывание оставляет работу сделанной наполовину.
+  */
+  fun progress(@StringRes title: Int, icon: ImageVector, state: TaskProgress, dangerCancel: Boolean = false, onCancel: () -> Unit = {}) = show {
+    val cancel = {
+      state.cancelled = true
+      close()
+      onCancel()
+    }
+    AlertDialog(
+      onDismissRequest = cancel,
+      properties = DialogProperties(dismissOnClickOutside = false),
+      icon = { Icon(icon, contentDescription = null) },
+      title = { Text(stringResource(title)) },
+      text = {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+          val total = state.total
+          if (total <= 0L) {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+          } else {
+            val part = (state.done.toFloat() / total).coerceIn(0f, 1f)
+            LinearProgressIndicator(progress = { part }, modifier = Modifier.fillMaxWidth())
+            Text(stringResource(R.string.share_progress, formatCount(state.done), formatCount(total), (part * 100).toInt()))
+          }
+        }
+      },
+      confirmButton = {},
+      dismissButton = { if (dangerCancel) DialogButton(Icons.Outlined.Close, R.string.cancel, danger = true, onClick = cancel) else CancelButton(cancel) }
+    )
+  }
+
+  /** Модальное окно на время короткой операции без отмены: бегущая полоса, без кнопок, "назад" не закрывает.
+      Закрывает вызывающий (close), когда операция закончена; начинать её - через afterFrames, чтобы окно успело появиться.
+  */
+  fun busy(@StringRes title: Int, icon: ImageVector) = show {
+    AlertDialog(
+      onDismissRequest = {},
+      properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
+      icon = { Icon(icon, contentDescription = null) },
+      title = { Text(stringResource(title)) },
+      text = { LinearProgressIndicator(Modifier.fillMaxWidth()) },
+      confirmButton = {}
     )
   }
 
@@ -264,6 +324,33 @@ object AppDialog {
     content?.invoke()
   }
 }
+
+/** Ход длительной операции для AppDialog.progress: объём в байтах; значения для окна обновляются в главном потоке
+    не чаще раза в PROGRESS_PERIOD_MS. start и advance зовутся из рабочего потока.
+*/
+class TaskProgress : IExportProgress {
+  @Volatile override var cancelled = false
+  var total by mutableLongStateOf(0L) /** 0 - объём ещё не известен */
+    private set
+  var done by mutableLongStateOf(0L)
+    private set
+
+  private val main = Handler(Looper.getMainLooper())
+  @Volatile private var shownAt = 0L
+
+  override fun start(total: Long) {
+    main.post { this.total = total }
+  }
+
+  override fun advance(done: Long) {
+    val now = SystemClock.uptimeMillis()
+    if (now - shownAt < PROGRESS_PERIOD_MS) return
+    shownAt = now
+    main.post { this.done = done }
+  }
+}
+
+private const val PROGRESS_PERIOD_MS = 200L
 
 // Popup menu at a point of the map.
 /**

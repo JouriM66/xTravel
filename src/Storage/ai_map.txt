@@ -8,37 +8,65 @@ DataIO.kt - свой формат и его чтение-запись. Самы�
     и в каталоге данных, и в архиве; загрузчик читает версию из него, без него - из data.xml),
     DATA_VERSION (актуальная версия формата, пишется ещё и в корень data.xml и задаёт
     устройство ВСЕГО каталога данных; меняешь формат - увеличивай и заводи импортер прежней версии).
-  IDataFormatImporter (version, upgrade(dir) - перевод каталога на месте, false - не смог), DataFormat1Importer
-    (всегда false), DataFormats (register в XTravelApp, upgrade), UnsupportedDataFormat.
+  IDataFormatImporter (version, upgrade(dir) - перевод каталога на месте, false - не смог),
+    DataFormats (register в XTravelApp, сейчас импортеров нет), UnsupportedDataFormat.
     DataIO.read: версия не та - импортер этой версии; нет его или отказ - UnsupportedDataFormat.
-    DataStore.init при этом ОЧИЩАЕТ ВЕСЬ AppDirs.base и сообщает "формат Х не поддерживается";
-    DataImport удаляет распакованный каталог принятого файла с тем же сообщением.
-  DataSet (что писать, собирается в главном потоке), LoadedData (накопитель импорта),
+    DataStore.init при этом НЕ ЗАГРУЖАЕТ данные и не трогает каталог, а зовёт IncompatibleData.ask.
+    Импортеры работают с каталогом данных; архив обмена другой версии DataImport отклоняет
+    ("формат Х не поддерживается"), импортеры архивов будут работать с данными прямо из архива.
+  DataSet (что писать, собирается в главном потоке; globals и active - только в полном сохранении),
+  LoadedData (накопитель импорта; dir = null - файлы в источнике импорта; active - активный трек,
+    fromGpx - дубли треков не ищутся, rescan - треки без полной сводки, её строит импорт по распакованному файлу),
   DataSelectors (all, points, routes, tracks - наборы с зависимостями),
-  DataIO (write, read, place, createExportFile, imagesDir, tracksDir),
-  DataStore (init, scheduleSave, saveNow, saveAfterPending),
-  DataImport (handle из intent, open из выбора файла; файлы по очереди),
+  IExportProgress (cancelled, start(всего байт), advance(записано)) - ход записи архива и его отмена (CancellationException).
+  DataIO (write, read, parse(input, dir) - data.xml из потока, xmlVersion(input), place, createExportFile, writeExport,
+    zipDirectory, imagesDir, tracksDir, picturePath, trackPath - пути файлов в каталоге данных и архиве, по ним
+    импорт сопоставляет ссылки data.xml с записями архива),
+    zipDirectory(dir, entries, ...) - файлы и каталоги entries в zip как есть, пути от dir, с ходом и отменой.
+    createExportFile(set, name, progress) - архив в AppDirs.share поверх writeExport, тоже НЕ из "io".
+    writeExport(set, out, onReady) - набор в формате обмена прямо в поток, onReady - перед первым байтом архива
+    (подготовка удалась, можно слать заголовок ответа). Звать не из "io": data.xml пишется в "io" во временный
+    каталог, а файлы данных берутся с места. Для этого place на время записи не копирует, а запоминает файлы:
+    владельцы секций обязаны класть свои файлы ТОЛЬКО через DataIO.place, иначе они выпадут из такой отдачи.
+  DataStore (init, isLoaded, scheduleSave, saveNow, saveAfterPending). До isLoaded каталог данных не меняется:
+    ни сохранение, ни файл записи трека (TrackRecorder ждёт).
   помощники XmlPullParser: forEachChild, attr.
 
-  Каталог данных - AppDirs.base. Файл обмена xTravel-v<версия>-<yyyy-MMM-dd>.xtravel.zip - тот же каталог в zip:
-    version.txt номер версии формата
+  Каталог данных - AppDirs.base. Файл обмена xTravel-v<версия>-<fileTimeStamp>.xtravel.zip - тот же каталог в zip:
+    version.txt номер версии формата; в архиве version.txt и data.xml - первые записи, импорт дальше не читает
     data.xml   <xtravel version="DATA_VERSION">, секции <points next-id>, <routes>, <notes> (элементы
                text и picture прямо в секции), <tracks>, <global>
     images\    картинки точек и маршрутов
-    tracks\    <имя>.xtrack и <имя>.xtrackh, существуют и передаются только вместе
+    tracks\    <id>.xtrack - файлы точек треков; имя и сводка трека - в секции <tracks> (tracksi_map.txt)
   Каждую секцию пишет и читает её владелец (IDataOwner в src\DataOwner.kt),
     незнакомые секции пропускаются. При записи в чужой каталог секция сама копирует туда свои файлы.
   Любое изменение точек, маршрутов или списка треков зовёт DataStore.scheduleSave;
     файлы треков пишет TrackRecorder.
-  ЗАВИСИМОСТЬ НАРУЖУ: DataImport после распаковки зовёт DataSelect.openImport
-    из Commands\DataSheet.kt - конвейер импорта возвращает управление в интерфейс.
+
+DataImport.kt - импорт файлов. Промежуточной распаковки нет: файлы берутся прямо из исходного файла.
+  ImportSource (uri, name, data, fileSize(path), readFiles(context, wanted, progress, onFile)): архив обмена или GPX.
+  DataImport: handle из intent, open из выбора файла; файлы по очереди, следующий ждёт конца шторки и импорта.
+    Чтение файла - в своём потоке "import" (не "io": там очередь подгрузки треков) под окном "Получение данных" с отменой.
+    Архив: читаются только version.txt и data.xml (DataIO.parse с dir = null) - по оглавлению прямо с их места
+    (utils readZipCatalog, readZipEntry), оттуда же размеры. Без произвольного доступа - последовательно до data.xml:
+    в архивах старых версий он в конце, это долго. Не zip или без data.xml - пробуется GPX.
+    apply(source, set, onDone): точки и записки (PointStore.applyImport), маршруты сливаются сразу; затем в потоке
+    "import" выбранные записи архива читаются каждая со своего места по оглавлению (utils openZipEntry), без оглавления -
+    одним последовательным проходом (ZipInputStream, медленно). Картинки ложатся в зарезервированные файлы
+    (дубль удаляется сразу), треки - под новыми id (сводка из rescan - по файлу), каждый трек сразу в TrackStorage.onImported.
+    Окно хода по объёму выбранного (без оглавления - по объёму файла) с красной "Отмена"; отмена ничего не удаляет, недополученные картинки убираются из точек.
+  ЗАВИСИМОСТЬ НАРУЖУ: DataImport после чтения зовёт DataSelect.openImport из Commands\DataSheet.kt,
+    а кнопка шторки - DataImport.apply.
 
 GeoDataShare.kt - "поделиться" для любых данных. ЕДИНСТВЕННЫЙ путь отдачи данных наружу, своих не заводить.
+  Исключение - сетевой доступ Commands\NetAccess.kt, он отдаёт поток DataIO.writeExport.
   GeoDataType (точки, маршруты, треки, METADATA - записки), DataSet.types().
   IGeoDataShare: label, supportedTypes, limit (0 - без лимита), icon, checkData, count, share(set) - провайдер сам
     создаёт и отправляет; файлы кладёт в AppDirs.share, каталог очищается при запуске (clearFiles в XTravelApp).
   GeoDataShareManager: register (ПОРЯДОК = порядок пунктов меню, регистрация в XTravelApp), providers(set),
-    share (сверх лимита спрашивает, отправить ли первые; провайдер сам берёт сколько умеет), shareFiles.
+    share (сверх лимита спрашивает, отправить ли первые; провайдер сам берёт сколько умеет), shareFiles, busy.
+    shareFiles(mime, text, make(progress)): make работает в своём потоке "share", НЕ в "io", под модальным окном
+    хода с отменой (AppDialog); пока busy, новая отправка не начинается.
   PopupShareMenu(set, close): пункты провайдеров для набора, "(до Х)" при лимите. ShareMenuItem (пункт
     контекстного меню, серый без провайдеров), ShareToolbarItem(onShared, set) - кнопка тулбара с меню.
   Место вызова только собирает набор (DataSelectors, InfoOwner.shareSet) и зовёт одно из трёх.
@@ -46,14 +74,21 @@ GeoDataShare.kt - "поделиться" для любых данных. ЕДИ�
     YandexMapsSiteShare, DoubleGisShare, GeoAppShare (map\MapLinkShare.kt, geo последним).
 
 XTravelFormat.kt - XTravelShare: любой набор в своём формате обмена, поверх DataIO.createExportFile.
-  Имя архива всегда по версии формата и дню формирования, независимо от содержимого.
+  Имя архива всегда по версии формата и моменту формирования (до секунды), независимо от содержимого: fileName, его же берёт
+    Commands\NetAccess.kt.
 
 GpxExport.kt - GpxShare: точки wpt, маршруты rte, треки trk (один trkseg, только стандартные поля) одним файлом.
   Маршрут несёт места остановок в себе. Записки GPX не несёт.
 
-GpxImport.kt - чтение GPX.
-  GpxImport.read(context, uri, dir) -> LoadedData: точки, треки (имя транслитом или по дате),
-    маршруты. Формат ссылок на точки не знает: каждая rtept читается как точка (безымянная - GPX1,
+IncompatibleData.kt - каталог данных несовместимого формата при запуске.
+  IncompatibleData.ask(version, error): окно - удалить данные, завершить без изменения каталога или сохранить
+    AppDirs.dataContent() архивом в Download (имя xTravel-data-v<N>-..., N из version.txt, иначе
+    xTravel-unknown-data-...) и затем очистить. Отмена ввода имени, отмена или ошибка сохранения - снова выбор.
+    После очистки DataStore.init запускается заново.
+
+GpxImport.kt - чтение GPX в два прохода.
+  GpxImport.read(context, uri) -> LoadedData (fromGpx): точки, сводки треков (имя из файла или по дате; id gpx<номер trk>),
+    маршруты. readTracks(input, wanted, onFile) - второй проход, точки выбранных треков пишутся сразу на место. Формат ссылок на точки не знает: каждая rtept читается как точка (безымянная - GPX1,
     GPX2...) и при применении импорта становится настоящей - своей или уже существующей.
 
 XFileProvider.kt
@@ -65,5 +100,6 @@ GlobalData.kt
 
 Импорт: zip с data.xml идёт в дерево выбора, не zip пробуется как GPX.
   Точка с теми же координатами (5 знаков) СЛИВАЕТСЯ с существующей, а не добавляется;
-  треки всегда добавляются как новые; одинаковый маршрут не добавляется.
+  треки добавляются как новые; трек своего архива, совпавший с сохранённым (duplicateOf), отмечается
+  в дереве и не берётся по умолчанию; треки из GPX дублями не считаются. Одинаковый маршрут не добавляется.
   Правила слияния точек - в points\ai_map.txt.

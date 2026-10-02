@@ -8,6 +8,7 @@ build/
 .gradle/
 *.iml
 
+TestData
 #internals
 \!*
 

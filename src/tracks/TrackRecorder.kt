@@ -14,9 +14,9 @@ import kotlin.math.max
 import kotlin.math.min
 
 // Records the current track from the positions accepted by the GPS filter. Works on the "gps" thread.
-// Samples stay in memory until the minimal count is reached, then the data file and the header of an unfinished track are created
-// and every sample is appended at once. The track goes on until it is finished (Rec) or deleted; the exit only closes the file,
-// and the next start continues it. Only the last "tail length" points are kept for drawing.
+// Samples stay in memory until the minimal count is reached and the data is loaded, then the data file tracks/<id>.xtrack is created,
+// the track becomes active in data.xml and every sample is appended at once. The track goes on until it is finished (Rec)
+// or deleted; the exit only closes the file, and the next start continues it. Only the last "tail length" points are kept for drawing.
 /**
 * Records accepted GPS positions on the GPS worker, buffering short tracks and publishing display snapshots.
 *
@@ -25,16 +25,16 @@ import kotlin.math.min
 * Public and subclass/module-facing members:
 * - [line] - Published projected tail geometry; readers must honor the published size and from indices.
 * - [current] - Observable metadata snapshot of recorded samples, or null before the first sample.
-* - [name] - Current or planned recording filename stem, or null before a name can be assigned.
+* - [name] - Имя текущей записи для показа, null - пока его нет.
 * - [hasFile] - Whether a recording data file has been created after reaching the sample threshold.
 * - [visible] - Runtime visibility of the active recording's map layer.
 * - [pointCount] - Number of samples in the current published recording header, or zero.
 * - [start] - Queues activation of recording and subscription to accepted GPS samples.
 * - [stop] - Queues closure of the current writer and waits up to three seconds.
 * - [restart] - Queues completion of the current track and resets recording for a new track.
-* - [discard] - Queues deletion of the current recording's paired files and resets recording state.
-* - [adopt] - Attempts to resume an unfinished saved track if the current recording is still empty.
-* - [rename] - Validates and publishes a new current-track name and queues the physical rename.
+* - [discard] - Queues deletion of the current recording's data file and resets recording state.
+* - [adopt] - Продолжает активный трек из data.xml, если текущая запись пуста.
+* - [rename] - Проверяет и публикует новое имя текущей записи.
 */
 object TrackRecorder {
 
@@ -51,18 +51,14 @@ object TrackRecorder {
   var line: TrackLine = TrackLine.EMPTY
     private set
 
-  // Main thread state: the header of the samples recorded so far (null without samples), the name the file has or will have.
+  // Main thread state: the header of the samples recorded so far (null without samples) and the name of the track.
   /**
   * Observable metadata snapshot of recorded samples, or null before the first sample.
   * @return Observable metadata snapshot of recorded samples, or null before the first sample.
   */
   var current by mutableStateOf<TrackHeader?>(null)
     private set
-  /**
-  * Current or planned recording filename stem, or null before a name can be assigned.
-  * @return Current or planned recording filename stem, or null before a name can be assigned.
-  */
-  var name by mutableStateOf<String?>(null)
+  var name by mutableStateOf<String?>(null) /** Имя текущей записи для показа, null - пока его нет */
     private set
   /**
   * Whether a recording data file has been created after reaching the sample threshold.
@@ -85,12 +81,13 @@ object TrackRecorder {
   private var running = false
   private val pending = ArrayList<GpsMeasure>()
   private var writer: BufferedWriter? = null
-  private var fileName: String? = null
+  private var fileId: String? = null /** id файла точек; null - файла ещё нет */
   private var plannedName: String? = null
   private var header = HeaderBuilder()
   private var wx = DoubleArray(LINE_CAPACITY)
   private var wy = DoubleArray(LINE_CAPACITY)
   private var lineSize = 0
+  @Volatile private var projection: IMapProjection = MercatorProjection /** Проекция хвоста; её задаёт карта (useProjection) */
 
   private val onUpdate: (GpsUpdate) -> Unit = { update ->
     val fix = update.fix
@@ -144,21 +141,13 @@ object TrackRecorder {
   */
   fun discard() = GpsDataManager.post {
     closeWriter()
-    fileName?.let {
-      TrackFiles.dataFile(it).delete()
-      TrackFiles.headerFile(it).delete()
-    }
+    fileId?.let { TrackFiles.dataFile(it).delete() }
     reset()
+    main.post { DataStore.scheduleSave() }
   }
 
-  // An unfinished track found at the start becomes the current one, unless the current one has data already.
-  // Called on the "io" thread, waits for the answer.
-  /**
-  * Attempts to resume an unfinished saved track if the current recording is still empty.
-  *
-  * Usage: Call on the IO worker; waits up to thirty seconds for GPS work. The field list must match TrackFields.ALL.
-  * @param saved Unfinished track header offered for resuming the current recording.
-  * @return True when adoption completed successfully.
+  /** Активный трек из data.xml становится текущим, если текущая запись пуста и поля файла - TrackFields.ALL.
+      Зовётся из потока "io", ждёт ответа до 30 с.
   */
   fun adopt(saved: TrackHeader): Boolean {
     var adopted = false
@@ -174,39 +163,59 @@ object TrackRecorder {
     return adopted
   }
 
-  // Main thread. Before the file exists only the planned name changes; the file is renamed at once otherwise.
-  /**
-  * Validates and publishes a new current-track name and queues the physical rename.
-  *
-  * Usage: Call on the main thread.
-  * @param newName Requested current-track filename stem without extension.
-  * @return Validation result; OK means the rename was queued, not that every later IO operation succeeded.
-  */
+  /** Новое имя текущей записи; файл не переименовывается, имя попадает в data.xml. Главный поток */
   fun rename(newName: String): RenameResult {
     if (!TrackStorage.validName(newName)) return RenameResult.INVALID
     if (newName == name) return RenameResult.OK
-    if (TrackFiles.dataFile(newName).exists() || TrackStorage.find(newName) != null) return RenameResult.EXISTS
+    if (TrackStorage.nameTaken(newName)) return RenameResult.EXISTS
     name = newName
     GpsDataManager.post {
       plannedName = newName
-      val old = fileName
-      if (old != null && old != newName) {
-        closeWriter()
-        if (TrackFiles.dataFile(old).renameTo(TrackFiles.dataFile(newName))) {
-          TrackFiles.headerFile(old).renameTo(TrackFiles.headerFile(newName))
-          fileName = newName
-        }
-      }
       publish()
+      main.post { DataStore.scheduleSave() }
     }
     return RenameResult.OK
   }
 
+  /** Удаляет точки из файла текущей записи (TrackFiles.removeSamples); сводка и хвост для рисования строятся по файлу заново */
+  fun removePoints(rows: Map<Int, String>) = GpsDataManager.post {
+    val id = fileId
+    closeWriter()
+    val removed = id != null && TrackFiles.removeSamples(TrackFiles.dataFile(id), rows)
+    if (!removed) {
+      main.post { Notify.error(R.string.track_point_not_removed) }
+      return@post
+    }
+    val builder = HeaderBuilder()
+    resetLine()
+    TrackFiles.forEachSample(TrackFiles.dataFile(id)) { time, lat, lon, _ ->
+      builder.add(time, lat, lon)
+      appendToLine(lat, lon)
+    }
+    header = builder
+    publish()
+    main.post { DataStore.scheduleSave() }
+  }
+
+  /** Карта рисует в другой проекции: хвост пересчитывается в неё, новые точки сразу идут в ней. Любой поток */
+  fun useProjection(target: IMapProjection) {
+    if (projection === target) return
+    GpsDataManager.post {
+      if (projection === target) return@post
+      projection = target
+      val converted = TrackLine(wx, wy, lineSize, line.from, line.projection).reprojected(target)
+      wx = converted.wx.copyOf(max(LINE_CAPACITY, wx.size))
+      wy = converted.wy.copyOf(max(LINE_CAPACITY, wy.size))
+      line = TrackLine(wx, wy, lineSize, converted.from, target)
+      ModuleHost.requestRedraw()
+    }
+  }
+
   private fun tryAdopt(saved: TrackHeader): Boolean {
-    if (header.count > 0 || fileName != null) return false
+    if (header.count > 0 || fileId != null) return false
     val builder = HeaderBuilder()
     var fields: List<String> = emptyList()
-    TrackFiles.forEachSample(TrackFiles.dataFile(saved.name), { fields = it }) { time, lat, lon, _ ->
+    TrackFiles.forEachSample(TrackFiles.dataFile(saved.id), { fields = it }) { time, lat, lon, _ ->
       builder.add(time, lat, lon)
       appendToLine(lat, lon)
     }
@@ -215,7 +224,7 @@ object TrackRecorder {
       return false
     }
     header = builder
-    fileName = saved.name
+    fileId = saved.id
     plannedName = saved.name
     main.post { visible = saved.visible }
     publish()
@@ -225,12 +234,13 @@ object TrackRecorder {
   private fun add(fix: GpsMeasure) {
     header.add(fix.time, fix.lat, fix.lon)
     appendToLine(fix.lat, fix.lon)
-    val name = fileName
-    if (name == null) {
+    val id = fileId
+    if (id == null) {
       pending += fix
-      if (header.count >= max(1, Settings.minPoints.value)) openFile()
+      // До загрузки данных каталог не трогается: формат каталога может оказаться несовместимым.
+      if (header.count >= max(1, Settings.minPoints.value) && DataStore.isLoaded) openFile()
     } else {
-      val out = writer ?: BufferedWriter(FileWriter(TrackFiles.dataFile(name), true)).also { writer = it }
+      val out = writer ?: BufferedWriter(FileWriter(TrackFiles.dataFile(id), true)).also { writer = it }
       TrackFiles.writeFix(out, fix)
       out.flush()
     }
@@ -248,25 +258,25 @@ object TrackRecorder {
       wy = wy.copyOfRange(size - keep, size).copyOf(capacity)
       size = keep
     }
-    val world = MercatorProjection.toWorld(lat, lon)
+    val world = projection.toWorld(lat, lon)
     wx[size] = world.x
     wy[size] = world.y
     size++
     lineSize = size
-    line = TrackLine(wx, wy, size, if (tail > 0) max(0, size - tail) else 0)
+    line = TrackLine(wx, wy, size, if (tail > 0) max(0, size - tail) else 0, projection)
   }
 
   private fun openFile() {
-    val name = plannedName ?: TrackTime.name(header.startTime)
-    main.post { TrackStorage.forget(name) }
-    val out = TrackFiles.dataFile(name).bufferedWriter()
+    val id = TrackFiles.newId()
+    plannedName = plannedName ?: TrackTime.name(header.startTime)
+    val out = TrackFiles.dataFile(id).bufferedWriter()
     TrackFiles.writeFieldLine(out)
     pending.forEach { TrackFiles.writeFix(out, it) }
     pending.clear()
     out.flush()
-    TrackFiles.writeHeader(header.buildOpen(name, visible, TrackFields.ALL))
     writer = out
-    fileName = name
+    fileId = id
+    main.post { DataStore.scheduleSave() }
   }
 
   private fun closeWriter() {
@@ -276,20 +286,18 @@ object TrackRecorder {
 
   private fun finishCurrent() {
     closeWriter()
-    val name = fileName ?: return
+    val id = fileId ?: return
     if (header.count == 0) {
-      TrackFiles.dataFile(name).delete()
-      TrackFiles.headerFile(name).delete()
+      TrackFiles.dataFile(id).delete()
       return
     }
-    val saved = header.build(name, visible, TrackFields.ALL)
-    runCatching { TrackFiles.writeHeader(saved) }
+    val saved = header.build(id, plannedName ?: TrackTime.name(header.startTime), visible)
     main.post { TrackStorage.onSaved(saved) }
   }
 
   private fun reset() {
     writer = null
-    fileName = null
+    fileId = null
     plannedName = null
     pending.clear()
     header = HeaderBuilder()
@@ -306,9 +314,9 @@ object TrackRecorder {
 
   private fun publish() {
     val count = header.count
-    val shownName = fileName ?: plannedName ?: if (count > 0) TrackTime.name(header.startTime) else null
-    val snapshot = if (count > 0 && shownName != null) header.build(shownName, visible, TrackFields.ALL) else null
-    val file = fileName != null
+    val shownName = plannedName ?: if (count > 0) TrackTime.name(header.startTime) else null
+    val snapshot = if (count > 0 && shownName != null) header.build(fileId.orEmpty(), shownName, visible) else null
+    val file = fileId != null
     main.post {
       current = snapshot
       name = shownName

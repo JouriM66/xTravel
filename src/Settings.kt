@@ -311,6 +311,7 @@ class EnumSetting<E : Enum<E>>(key: String, default: E, private val entries: Lis
 * - [routeAutoSort] - Whether a changed list of stops is sorted by itself.
 * - [routeArrivalRadius] - Радиус прибытия навигации к остановке, м.
 * - [routeShowManeuver] - Показывать направление следующего манёвра при навигации.
+* - [uploadFolder] - Каталог для файлов, принятых сетевым доступом.
 * - [miuiConfirmed] - Persisted acknowledgement of MIUI background settings, reset when GPS is enabled again.
 * - [init] - Opens preferences, loads registered settings and migrates the former north-up option.
 * - [export] - Exports registered settings as key=value lines, excluding personal map API keys.
@@ -363,6 +364,8 @@ object Settings {
   * @return Persisted map-background provider selection.
   */
   val mapType = add(EnumSetting("map_type", MapType.YANDEX, MapType.entries))
+  val vectorMapFile = add(StringSetting("vector_map_file", "")) /** Uri файла PMTiles встроенной карты; пусто - только встроенный архив */
+  val vectorMapStyle = add(EnumSetting("vector_map_style", MapStyleKind.LIGHT, MapStyleKind.entries)) /** Оформление встроенной карты */
   /**
   * Persisted flag keeping the activity display awake.
   * @return Persisted flag keeping the activity display awake.
@@ -524,6 +527,7 @@ object Settings {
   * @return Way of travelling the route requests are made for.
   */
   val routeTransport = add(EnumSetting("route_transport", TransportKind.WALK, TransportKind.entries))
+  val routeBuilder = add(StringSetting("route_builder", "yandex")) /** id построителя маршрутов из RouteBuilders */
   /**
   * Whether a point added to a route gets automatic visiting switched on.
   * @return Whether a point added to a route gets automatic visiting switched on.
@@ -552,6 +556,7 @@ object Settings {
   /** Радиус прибытия к остановке, м: действует больший из него и радиуса автопосещения точки */
   val routeArrivalRadius = add(IntSetting("route_arrival_radius", 30))
   val routeShowManeuver = add(BoolSetting("route_show_maneuver", true)) /** Направление следующего манёвра в тулбаре навигации */
+  val uploadFolder = add(StringSetting("upload_folder", "")) /** Uri каталога SAF для файлов сетевого доступа; пусто - Download */
 
   // Set once the user confirmed the MIUI background settings; reset when GPS is switched on again.
   /**

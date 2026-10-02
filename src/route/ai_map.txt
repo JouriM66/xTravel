@@ -1,7 +1,14 @@
 русский текст для того чтобы редакторы не путали кодировку
 
-srcoute\ - маршруты: упорядоченный набор точек для посещения по очереди и найденные пути
-между ними. Сами пути строит подложка карты через Maps.engine.requestRoute.
+src\route\ - маршруты: упорядоченный набор точек для посещения по очереди и найденные пути
+между ними. Сами пути строит выбранный построитель через RouteBuilders.request.
+
+RouteBuilders.kt - построители путей, независимы от карты.
+  IRouteListener: onRouteReady, onRouteFailed. IRouteBuilder: id, label, settings (строки редактора настроек), request.
+  RouteBuilders: all, current (по Settings.routeBuilder), register (из XTravelApp), request.
+    Отказ (построитель не выбран, не настроен) - модальное окно ОДИН раз за запуск, дальше молча.
+  Выбор - первая строка группы "Маршрут" в SettingsScreen.kt, кнопка настроек открывает settings выбранного.
+  Реализации: map\yandex\YandexRoutes.kt.
 
 RouteModel.kt
   TransportKind (пешком, велосипед, транспорт, машина, грузовой),
@@ -74,4 +81,4 @@ RouteSheet.kt - шторка маршрута.
 Отдача маршрутов - провайдерами IGeoDataShare в Storage\ (GpxShare, XTravelShare) и map\MapLinkShare.kt.
   В своём формате маршруты уезжают внутри общего набора через DataSelectors.routes.
 
-Элемент верхнего тулбара при активном маршруте - RouteFollow, лежит в Toolbars	opFollow.kt.
+Элемент верхнего тулбара при активном маршруте - RouteFollow, лежит в Toolbars\topFollow.kt.

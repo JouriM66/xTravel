@@ -69,9 +69,10 @@ interface IPointListener {
 * - [releasePicture] - Releases the temporary cleanup protection for a picture filename.
 * - [pictureFile] - Resolves an image filename within the application's images directory.
 * - [usedPictures] - Collects attached and temporarily protected picture filenames.
-* - [Import] - Carries prepared point, route and note data with copied pictures protected from cleanup.
-* - [prepareImport] - Copies imported images and filters duplicate pictures for coordinate-matching points and notes.
-* - [applyImport] - Merges matching points, allocates new IDs, merges notes and releases imported-picture protection.
+* - [ImportPicture] - Picture of an import: its path in the source and its reserved file.
+* - [applyImport] - Merges imported points and notes at once, reserving files for their pictures.
+* - [isDuplicate] - Checks an unpacked import picture against the pictures the point already had.
+* - [dropPicture] - Removes a picture reference from a point or the notes.
 * - [merged] - Combines missing metadata and additional attachments into an existing point snapshot.
 */
 object PointStore {
@@ -127,7 +128,7 @@ object PointStore {
   */
   fun findOrCreate(record: MapPoint): MapPoint {
     points.firstOrNull { samePlace(it, record) }?.let { return it }
-    val created = record.copy(id = nextId++, visited = false, status = PointStatus.INDEPENDENT, highlighted = false)
+    val created = record.copy(id = nextId++, highlighted = false)
     points.add(created)
     DataStore.scheduleSave()
     listeners.notifyEach { it.onPointsChanged() }
@@ -262,71 +263,33 @@ object PointStore {
     return elements.filterIsInstance<PointElement.Picture>().map { it.file }.toSet() + pending
   }
 
-  // Points and notes of an import with their pictures already copied; pictures stay protected until applied.
-  /**
-  * Carries prepared point, route and note data with copied pictures protected from cleanup.
-  * @param points Imported points whose image elements already reference copied application files.
-  * @param notes Imported notes with copied image references, or null.
-  * @param pictures Newly copied image files protected from cleanup until applyImport releases them.
-  * @property points Imported points whose image elements already reference copied application files.
-  * @property notes Imported notes with copied image references, or null.
-  * @property pictures Newly copied image files protected from cleanup until applyImport releases them.
+  /** Картинка импорта: path - её файл в источнике, target - зарезервированный и защищённый файл в AppDirs.images,
+      own - картинки той же точки (или записок) до импорта: совпадение с любой из них делает её дублем.
   */
-  class Import(val points: List<MapPoint>, val notes: MetaInfo?, val pictures: List<File>)
+  class ImportPicture(val path: String, val target: File, val own: List<File>)
 
-  // Copies the pictures of the imported data; a picture the matching point already has is dropped. Runs on the "io" thread.
-  /**
-  * Copies imported images and filters duplicate pictures for coordinate-matching points and notes.
-  *
-  * Usage: Run on the IO executor; apply the plan on the main thread, releasing its files when done.
-  * @param data Parsed import data whose dir owns the source images and whose point IDs are still source IDs.
-  * @return A prepared import plan with protected copied files.
+  /** Слияние точек и записок импорта: точка на месте существующей сливается с ней, остальные добавляются.
+      Картинки сразу получают зарезервированные файлы, их заполняет импорт по мере распаковки; файл, который
+      так и не получен или оказался дублем, убирается dropPicture. Главный поток.
   */
-  fun prepareImport(data: LoadedData): Import {
+  fun applyImport(source: List<MapPoint>, notes: MetaInfo?): List<ImportPicture> {
     val existing = points.toList()
-    val images = DataIO.imagesDir(data.dir)
-    val copied = mutableListOf<File>()
+    val pictures = mutableListOf<ImportPicture>()
 
-    fun copy(element: PointElement.Picture): PointElement.Picture? {
-      val source = File(images, element.file)
-      if (!source.isFile) return null
-      val target = newPictureFile(source.extension.ifEmpty { "jpg" })
-      copied += target
-      source.copyTo(target, overwrite = true)
-      return PointElement.Picture(target.name)
-    }
+    fun reserve(elements: List<PointElement>, own: List<File>) = MetaInfo(elements.map { element ->
+      if (element !is PointElement.Picture) return@map element
+      val target = newPictureFile(File(element.file).extension.ifEmpty { "jpg" })
+      pictures += ImportPicture(DataIO.picturePath(element.file), target, own)
+      PointElement.Picture(target.name)
+    })
 
-    fun copyAll(elements: List<PointElement>, own: List<File>): List<PointElement> = elements.mapNotNull { element ->
-      when {
-        element !is PointElement.Picture -> element
-        own.any { samePicture(File(images, element.file), it) } -> null
-        else -> copy(element)
-      }
-    }
-
-    val imported = data.points.map { point ->
-      val own = existing.firstOrNull { samePlace(it, point) }?.elements.orEmpty()
-        .filterIsInstance<PointElement.Picture>().map { pictureFile(it.file) }
-      point.copy(info = MetaInfo(copyAll(point.elements, own)))
-    }
-    val ownNotes = NotesStore.notes.pictures.map(::pictureFile)
-    val notes = data.notes?.let { MetaInfo(copyAll(it.elements, ownNotes)) }
-    return Import(imported, notes, copied)
-  }
-
-  // A point at the place of an existing one is merged into it. Returns the number of imported points.
-  /**
-  * Merges matching points, allocates new IDs, merges notes and releases imported-picture protection.
-  *
-  * Usage: Call on the main thread after prepareImport.
-  * @param plan Prepared import with remapped picture filenames and cleanup protection.
-  * @return The number of incoming point records processed.
-  */
-  fun applyImport(plan: Import): Int {
     val added = mutableListOf<MapPoint>()
-    // Points the import was merged into: they are marked in the list, so the duplicates are seen at once.
+    // Точки, в которые слился импорт: список прокручивается к первой из них.
     val duplicates = mutableListOf<Long>()
-    plan.points.forEach { point ->
+    source.forEach { incoming ->
+      val own = existing.firstOrNull { samePlace(it, incoming) }?.elements.orEmpty()
+        .filterIsInstance<PointElement.Picture>().map { pictureFile(it.file) }
+      val point = incoming.copy(info = reserve(incoming.elements, own))
       val index = points.indexOfFirst { samePlace(it, point) }
       val addedIndex = added.indexOfFirst { samePlace(it, point) }
       when {
@@ -336,20 +299,27 @@ object PointStore {
         }
         addedIndex >= 0 -> added[addedIndex] = merged(added[addedIndex], point)
         else -> {
-          // A point new to the application starts plain: what it was elsewhere says nothing about this travel.
-          added += point.copy(id = nextId++, visited = false, status = PointStatus.INDEPENDENT)
+          added += point.copy(id = nextId++)
         }
       }
     }
     points.addAll(added)
-    plan.notes?.let(NotesStore::applyImport)
-    plan.pictures.forEach(::releasePicture)
-    val marked = duplicates.ifEmpty { added.map { it.id } }
-    highlight(marked)
-    scrollTarget = marked.firstOrNull()
+    notes?.let { NotesStore.applyImport(reserve(it.elements, NotesStore.notes.pictures.map(::pictureFile))) }
+    scrollTarget = duplicates.ifEmpty { added.map { it.id } }.firstOrNull()
     DataStore.scheduleSave()
     listeners.notifyEach { it.onPointsChanged() }
-    return plan.points.size
+    return pictures
+  }
+
+  /** Распакованная картинка импорта совпала с картинкой, которая у точки уже была. Любой поток */
+  fun isDuplicate(picture: ImportPicture) = picture.own.any { samePicture(picture.target, it) }
+
+  /** Убирает ссылку на картинку из точки или записок, не трогая файл. Главный поток */
+  fun dropPicture(name: String) {
+    fun drop(info: MetaInfo) = MetaInfo(info.elements.filterNot { it is PointElement.Picture && it.file == name })
+    val point = points.firstOrNull { point -> point.elements.any { it is PointElement.Picture && it.file == name } }
+    if (point != null) update(point.id) { it.copy(info = drop(it.info)) }
+    else if (NotesStore.notes.pictures.contains(name)) NotesStore.update(::drop)
   }
 
   // Texts the target does not have and all new pictures go to the end; the other values only fill what is missing,
@@ -449,7 +419,7 @@ object PointsData : IDataOwner {
   * @param result Mutable import accumulator receiving parsed records.
   * @return Unit; consumes the current XML section.
   */
-  override fun read(parser: XmlPullParser, dir: File, result: LoadedData) {
+  override fun read(parser: XmlPullParser, dir: File?, result: LoadedData) {
     parser.attr("next-id")?.toLongOrNull()?.let { result.nextId = it }
     parser.forEachChild { name -> if (name == "point") result.points += readPoint(parser) }
   }

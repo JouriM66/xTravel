@@ -21,96 +21,38 @@ import com.yandex.mapkit.mapview.MapView
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
-// Yandex MapKit as a passive background: own gestures are off, the camera comes from the application.
-// Every MapKit call is guarded: a failure switches the map off.
-/**
-* Adapts Yandex MapKit as a passive map background with calibrated overlay coordinates.
-*
-* Usage: MapKit operations run on the main thread. A consumed API key cannot be replaced without process restart; call ensureReady before creating MapView.
-*
-* Public and subclass/module-facing members:
-* - [licenseInfo] - Supplies localized provider attribution only when its API key is configured.
-* - [Companion] - Shared factory, state and lifecycle operations for YandexMapEngine.
-* - [setCamera] - Stores the camera and moves the attached MapKit view.
-* - [calibration] - Measures actual camera-center projection and map scale through MapKit worldToScreen.
-* - [settingsChanged] - Applies 2D/3D settings to the attached map.
-* - [openExternal] - Launches Yandex Maps for the request, falling back to its website.
-* - [requestRoute] - Asks the Yandex routers for the ways from one coordinate to another.
-* - [handleTap] - Checks the Yandex logo hit area and opens the provider when touched.
-* - [start] - Marks the engine active and starts its attached view and MapKit as needed.
-* - [stop] - Marks the engine inactive and stops its attached view and MapKit as needed.
-* - [release] - Detaches the current MapView and stops it when necessary.
-* - [Backdrop] - Creates, attaches and displays a MapView, or a blank background if creation fails.
+/** Яндекс MapKit как пассивная подложка: свои жесты выключены, камера - от приложения.
+    Каждый вызов MapKit под Failures.guard(MAP): сбой переключает на встроенную карту. Главный поток.
+    Ключ MapKit берётся один раз за процесс: перед созданием MapView нужен ensureReady.
 */
 class YandexMapEngine : IMapEngine, ILicenseInfo {
 
-  /**
-  * Supplies localized provider attribution only when its API key is configured.
-  * @return Current license entries, or an empty array without a key.
-  */
   override fun licenseInfo(): Array<LicenseInfo> = Companion.licenseInfo()
 
-  /**
-  * Shared factory, state and lifecycle operations for YandexMapEngine.
-  *
-  * Public and subclass/module-facing members:
-  * - [licenseInfo] - Supplies localized provider attribution only when its API key is configured.
-  * - [ready] - Whether MapKit initialization succeeded in this process.
-  * - [restartNeeded] - Whether an already-consumed API key changed and requires process restart.
-  * - [locale] - MapKit locale built from the device language and country.
-  * - [ensureReady] - Sets the configured API key and locale and initializes MapKit once in the process.
-  * - [keyChanged] - Marks a consumed key as requiring restart or initializes the first key for the selected provider.
-  */
   companion object : ILicenseInfo {
-    /**
-    * Supplies localized provider attribution only when its API key is configured.
-    * @return Current license entries, or an empty array without a key.
-    */
+    /** Сведения о MapKit, только когда введён ключ. */
     override fun licenseInfo(): Array<LicenseInfo> = if (Settings.mapkitKey.value.isBlank()) emptyArray() else arrayOf(
       LicenseInfo("Yandex MapKit", AppSession.context.getString(R.string.license_yandex_mapkit, BuildConfig.YANDEX_MAPKIT_VERSION))
     )
 
-    // Step along the meridian the scale of MapKit is measured with: small enough to stay near the center, large enough to measure.
-    private const val PROBE_WORLD = 1e-4
-
-    // Logo area in the bottom right corner of the map, approximate.
-    private const val LOGO_WIDTH_DP = 110
+    private const val PROBE_WORLD = 1e-4 /** Шаг по меридиану для замера масштаба MapKit: мал, чтобы остаться у центра, и измерим */
+    private const val LOGO_WIDTH_DP = 110 /** Примерная область логотипа в правом нижнем углу */
     private const val LOGO_HEIGHT_DP = 40
 
-    // MapKit got its key and language; without them the engine is not created.
-    /**
-    * Whether MapKit initialization succeeded in this process.
-    * @return Whether MapKit initialization succeeded in this process.
-    */
-    var ready = false
+    var ready = false /** MapKit получил ключ и язык; без этого движок не создаётся */
       private set
 
-    // MapKit takes a key once per process: a changed key works only in a new process.
-    /**
-    * Whether an already-consumed API key changed and requires process restart.
-    * @return Whether an already-consumed API key changed and requires process restart.
-    */
-    var restartNeeded = false
+    var restartNeeded = false /** Ключ сменили после того, как MapKit взял прежний: новый заработает в новом процессе */
       private set
     private var keyTaken = false
 
-    // Language of the map labels: the phone one, as "lang_COUNTRY" that MapKit needs.
-    /**
-    * MapKit locale built from the device language and country.
-    * @return MapKit locale built from the device language and country.
-    */
+    /** Язык подписей карты - язык телефона в виде "lang_COUNTRY", как требует MapKit. */
     val locale: String by lazy {
       val system = Languages.systemLocale()
       "${system.language}_${system.country.ifEmpty { system.language.uppercase() }}"
     }
 
-    // Key, language and initialization at the first need; the first key entered works at once.
-    /**
-    * Sets the configured API key and locale and initializes MapKit once in the process.
-    *
-    * Usage: Call on the main thread. After a failed key-consuming attempt, a fresh process may be required.
-    * @return True when MapKit is ready; false for missing key or initialization failure.
-    */
+    /** Ключ, язык и инициализация при первой надобности; false - нет ключа или инициализация не удалась. */
     fun ensureReady(): Boolean {
       if (ready) return true
       if (keyTaken) return false
@@ -125,18 +67,11 @@ class YandexMapEngine : IMapEngine, ILicenseInfo {
       return ready
     }
 
-    // The key in the settings changed: the first one starts the map, a changed one waits for a new process.
-    /**
-    * Marks a consumed key as requiring restart or initializes the first key for the selected provider.
-    * @return Unit; may show a restart message.
-    */
+    /** Ключ в настройках изменён: если MapKit уже взял прежний, новый заработает после перезапуска. */
     fun keyChanged() {
-      if (keyTaken) {
-        restartNeeded = true
-        AppSession.message(R.string.key_restart)
-      } else if (Maps.type == MapType.YANDEX) {
-        Maps.select(MapType.YANDEX)
-      }
+      if (!keyTaken) return
+      restartNeeded = true
+      AppSession.message(R.string.key_restart)
     }
   }
 
@@ -145,22 +80,12 @@ class YandexMapEngine : IMapEngine, ILicenseInfo {
   private var active = false
   private var running = false
 
-  /**
-  * Stores the camera and moves the attached MapKit view.
-  * @param state New immutable camera snapshot.
-  * @return Unit; guarded map operations report failures.
-  */
   override fun setCamera(state: CameraState) {
     camera = state
     guard { mapView?.mapWindow?.map?.move(state.toYandex()) }
   }
 
-  // MapKit is asked where it put the center and how far a known step of the world went: its window and its scale are its own.
-  /**
-  * Measures actual camera-center projection and map scale through MapKit worldToScreen.
-  * @param camera Camera snapshot used for this projection or background measurement.
-  * @return Measured calibration, or null when no usable view/projection exists.
-  */
+  /** У MapKit спрашивается, где он нарисовал центр и куда ушёл известный шаг мира: окно и масштаб у него свои. */
   override fun calibration(camera: CameraState): MapCalibration? = runCatching {
     val window = mapView?.mapWindow ?: return null
     val center = MercatorProjection.toWorld(camera.center)
@@ -172,10 +97,7 @@ class YandexMapEngine : IMapEngine, ILicenseInfo {
     MapCalibration(Offset(screenCenter.x, screenCenter.y), step / PROBE_WORLD)
   }.getOrNull()
 
-  /**
-  * Applies 2D/3D settings to the attached map.
-  * @return Unit; does nothing without an attached view.
-  */
+  /** Режим 2D/3D. */
   override fun settingsChanged() {
     guard { mapView?.mapWindow?.map?.let(::applyMode) }
   }
@@ -184,23 +106,7 @@ class YandexMapEngine : IMapEngine, ILicenseInfo {
     Failures.guard(FailureSource.MAP, block)
   }
 
-  /**
-  * Asks the Yandex routers for the ways from one coordinate to another.
-  * @param from Coordinate the way starts at.
-  * @param to Coordinate the way ends at.
-  * @param transport Way of travelling to request.
-  * @param listener Receiver of the answer or of the failure reason.
-  * @return True when the request was submitted, false when MapKit is not ready or the request failed.
-  */
-  override fun requestRoute(from: GeoPoint, to: GeoPoint, transport: TransportKind, listener: IRouteListener): Boolean =
-    YandexRoutes.request(from, to, transport, listener)
-
-  // The Yandex Maps application when it is installed, otherwise the site. Center, zoom and the marked point are passed.
-  /**
-  * Launches Yandex Maps for the request, falling back to its website.
-  * @param request Camera and optional target information for the external map.
-  * @return Unit; reports an unavailable browser when both launches fail.
-  */
+  /** Приложение Яндекс Карт, если установлено, иначе сайт; передаются центр, масштаб и отмеченная точка. */
   override fun openExternal(request: MapOpenRequest) {
     val query = buildString {
       append("ll=${request.center.lon},${request.center.lat}")
@@ -220,58 +126,35 @@ class YandexMapEngine : IMapEngine, ILicenseInfo {
     }
   }
 
-  // The Yandex terms require the logo to lead to Yandex Maps; the gesture layer above the map takes its taps.
-  /**
-  * Checks the Yandex logo hit area and opens the provider when touched.
-  * @param screen Position in the map viewport's screen coordinates, in pixels.
-  * @param viewport Coordinate converter for the current camera and canvas.
-  * @return True for a logo tap, false otherwise.
-  */
+  /** Условия Яндекса требуют, чтобы логотип вёл в Яндекс Карты; касания забирает слой жестов над картой, поэтому проверка здесь. */
   override fun handleTap(screen: Offset, viewport: MapViewport): Boolean {
     val inLogo = screen.x > viewport.width - LOGO_WIDTH_DP * viewport.density && screen.y > viewport.height - LOGO_HEIGHT_DP * viewport.density
     if (inLogo) openExternal(MapOpenRequest(camera.center, camera.zoom, camera.azimuth))
     return inLogo
   }
 
-  // 2D mode switches off the 3D buildings and the automatic tilt at large zoom.
+  /** Режим 2D выключает 3D-здания и автоматический наклон на крупном масштабе. */
   private fun applyMode(map: com.yandex.mapkit.map.Map) {
     val use3d = Settings.map3d.value
     map.set2DMode(!use3d)
     map.isAwesomeModelsEnabled = use3d
   }
 
-  /**
-  * Marks the engine active and starts its attached view and MapKit as needed.
-  * @return Unit; call on the main thread.
-  */
   override fun start() {
     active = true
     updateRunning()
   }
 
-  /**
-  * Marks the engine inactive and stops its attached view and MapKit as needed.
-  * @return Unit; call on the main thread.
-  */
   override fun stop() {
     active = false
     updateRunning()
   }
 
-  /**
-  * Detaches the current MapView and stops it when necessary.
-  * @return Unit; use when replacing the engine.
-  */
   override fun release() {
     mapView?.let(::detach)
   }
 
-  // Without a view (it failed to be created) the background stays white.
-  /**
-  * Creates, attaches and displays a MapView, or a blank background if creation fails.
-  * @param modifier Compose layout and drawing modifier applied to the emitted host.
-  * @return Unit; view attachment follows composition lifetime.
-  */
+  /** Если MapView не создался, подложка остаётся белой. */
   @Composable
   override fun Backdrop(modifier: Modifier) {
     val context = LocalContext.current
@@ -311,6 +194,7 @@ class YandexMapEngine : IMapEngine, ILicenseInfo {
     }
   }
 
+  // MapKit и вид запущены, пока движок активен и вид прикреплён.
   private fun updateRunning() {
     val view = mapView ?: return
     if (active == running) return

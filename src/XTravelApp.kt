@@ -12,7 +12,10 @@ class XTravelApp : Application() {
     Settings.init(this)
     LicenseManager.register(YandexMapEngine)
     LicenseManager.register(YandexSearchEngine)
+    LicenseManager.register(VectorMapLicense)
     GeoSearchManager.register(YandexSearchEngine)
+    GeoSearchManager.register(VectorSearchEngine) // после сетевого: первым в byPosition должен идти более точный ответ
+    RouteBuilders.register(YandexRoutes)
     GeoDataShareManager.register(XTravelShare)
     GeoDataShareManager.register(GpxShare)
     GeoDataShareManager.register(TextPhotoShare)
@@ -25,7 +28,6 @@ class XTravelApp : Application() {
     GpsDataManager.register(GpsFilter_None)
     GpsDataManager.register(GpsFilter_Simple)
     GpsDataManager.selfRegister()
-    DataFormats.register(DataFormat1Importer)
     DataOwnerManager.register(PointsData)
     DataOwnerManager.register(RouteStore)
     DataOwnerManager.register(NotesData)
@@ -34,7 +36,6 @@ class XTravelApp : Application() {
     PointStore.listeners.register(RouteStore)
     DataStore.init()
     Alerts.init(this)
-    if (Maps.type == MapType.YANDEX && Maps.shownType == MapType.NONE) AppSession.message(R.string.mapkit_key_missing)
 
     Settings.useGps.onChange { on ->
       if (on) {

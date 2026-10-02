@@ -1,6 +1,8 @@
 // русский текст для того чтобы редакторы не путали кодировку
 package com.jm.xtravel
 
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.runtime.Composable
 import com.yandex.mapkit.RequestPoint
 import com.yandex.mapkit.RequestPointType
 import com.yandex.mapkit.directions.DirectionsFactory
@@ -27,36 +29,24 @@ import com.yandex.mapkit.transport.masstransit.TimeOptions
 import com.yandex.mapkit.transport.masstransit.TransitOptions
 import com.yandex.runtime.Error
 
-// Routing of the Yandex provider. Pedestrian, bicycle and public-transport answers carry no manoeuvres; only the
-// driving routers describe the turns, so a route of the other kinds gets its steps from nobody.
-
-/**
-* Requests routes from the Yandex routers and turns their answers into application geometries.
-*
-* Usage: Call on the main thread after MapKit is ready; the listener answers on the main thread as well.
-*
-* Public and subclass/module-facing members:
-* - [request] - Submits a route request for the given way of travelling.
+/** Построитель маршрутов Яндекса: запросы роутерам MapKit и перевод ответов в геометрии приложения.
+    Главный поток; MapKit поднимается здесь же, если карта Яндекса этого не сделала.
+    Манёвры дают только автомобильные роутеры: у пешеходных, велосипедных и транспортных ответов шагов нет.
 */
-object YandexRoutes {
+object YandexRoutes : IRouteBuilder {
+
+  override val id = "yandex"
+  override val label = R.string.map_yandex
+  override val settings: (@Composable ColumnScope.() -> Unit) = { YandexSettings.RouteRows() }
 
   private var drivingRouter: DrivingRouter? = null
   private var pedestrianRouter: PedestrianRouter? = null
   private var bicycleRouter: BicycleRouterV2? = null
   private var masstransitRouter: MasstransitRouter? = null
 
-  // MapKit does not hold the session itself; a session that is collected stops answering.
-  private val sessions = mutableListOf<Any>()
+  private val sessions = mutableListOf<Any>() /** MapKit сам сессию не держит: собранная сборщиком мусора сессия не отвечает */
 
-  /**
-  * Submits a route request for the given way of travelling.
-  * @param from Coordinate the way starts at.
-  * @param to Coordinate the way ends at.
-  * @param transport Way of travelling to request.
-  * @param listener Receiver of the answer or of the failure reason.
-  * @return True when the request was submitted.
-  */
-  fun request(from: GeoPoint, to: GeoPoint, transport: TransportKind, listener: IRouteListener): Boolean {
+  override fun request(from: GeoPoint, to: GeoPoint, transport: TransportKind, listener: IRouteListener): Boolean {
     if (!YandexMapEngine.ensureReady()) return false
     val points = listOf(waypoint(from), waypoint(to))
     val submitted = Failures.guard(FailureSource.MAP) {
@@ -82,14 +72,15 @@ object YandexRoutes {
     sessions.remove(session)
   }
 
-  // FOR LOCAL USE: an answer of a router. MapKit calls back from its own native code: a failure that leaves the handler
-  // is not caught by anybody and kills the process without a word, so the handling goes through the guard.
+  /** Ответ роутера. MapKit зовёт его из своего нативного кода: исключение, вышедшее из обработчика, никто не ловит
+      и процесс молча падает, поэтому обработка идёт под guard. FOR LOCAL USE
+  */
   private fun answer(session: Any?, block: () -> Unit) {
     done(session)
     Failures.guard(FailureSource.MAP, block)
   }
 
-  // FOR LOCAL USE: the answer handler of the pedestrian, bicycle and public-transport routers; all three answer alike.
+  /** Обработчик ответа пешеходного, велосипедного и транспортного роутеров: все три отвечают одинаково. FOR LOCAL USE */
   private fun masstransitCallback(
     from: GeoPoint,
     to: GeoPoint,
@@ -118,7 +109,7 @@ object YandexRoutes {
     val router = masstransitRouter ?: TransportFactory.getInstance().createMasstransitRouter().also { masstransitRouter = it }
     var session: MasstransitSession? = null
     val callback = masstransitCallback(from, to, transport, listener) { session }
-    // The options must be filled in: the constructor without arguments leaves their fields empty and the native binding dies on them.
+    // Параметры заполнять явно: конструктор без аргументов оставляет поля пустыми, и нативная привязка на них падает.
     val options = TransitOptions(FilterVehicleTypes.NONE.value, TimeOptions())
     session = router.requestRoutes(points, options, RouteOptions(FitnessOptions()), callback)
     keep(session)
@@ -151,7 +142,7 @@ object YandexRoutes {
 
   private fun line(geometry: Polyline): List<GeoPoint> = geometry.points.map { GeoPoint(it.latitude, it.longitude) }
 
-  // FOR LOCAL USE: the length of a line the provider gave no distance for.
+  /** Длина линии, для которой поставщик не дал расстояния. FOR LOCAL USE */
   private fun lineLength(line: List<GeoPoint>): Double {
     var total = 0.0
     for (i in 1 until line.size) total += GeoMath.distance(line[i - 1].lat, line[i - 1].lon, line[i].lat, line[i].lon)

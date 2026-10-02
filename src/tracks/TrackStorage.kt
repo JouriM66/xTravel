@@ -17,47 +17,16 @@ import java.util.concurrent.Executors
 /**
 * Distinguishes successful renaming, an occupied target name and an invalid or failed rename.
 */
-enum class RenameResult { 
+enum class RenameResult {
   /** Name accepted or rename completed according to the calling API. */
-  OK, 
+  OK,
   /** The requested target name is already occupied. */
-  EXISTS, 
+  EXISTS,
   /** The name is invalid or the rename could not be applied. */
   INVALID }
 
-// Saved tracks: headers of all of them, data only of the visible ones. The list is changed on the main thread,
-// file work goes to the "io" thread. Names and visibility are saved by DataStore.
-/**
-* Owns saved-track headers on the main thread and loads their geometry on a serialized IO executor.
-*
-* Usage: Change observable headers on the main thread. Use io for file operations; loaded geometry is replaced as a snapshot for drawing.
-*
-* Public and subclass/module-facing members:
-* - [io] - Serialized executor for file operations, wrapped in the background failure guard.
-* - [tracks] - Observable saved-track headers sorted newest first; mutate through store operations on the main thread.
-* - [loaded] - Published geometry snapshots indexed by filename stem; background loads replace the map as a whole.
-* - [scrollTarget] - Saved-track name requested for one-time list scrolling, or null.
-* - [currentHighlighted] - Whether the current recording's row is highlighted at runtime.
-* - [scrollToCurrent] - Pending request to scroll the list to the active recording.
-* - [focusCurrent] - Requests scrolling to the current recording and clears saved-track highlights.
-* - [collect] - Reconciles listed tracks with data files and offers the newest unfinished track to the recorder.
-* - [onLoaded] - Replaces stored headers, sorts them newest first and queues geometry loads for visible tracks.
-* - [find] - Looks up a saved track by its filename stem.
-* - [forget] - Removes an old header and cached geometry after its name is reused by a recording.
-* - [onSaved] - Adds or replaces a finished track header and loads its geometry when visible.
-* - [importFiles] - Copies imported track data under unused names and writes matching headers.
-* - [duplicateOf] - Finds a completed track with matching times, count and rounded endpoint coordinates.
-* - [focus] - Requests scrolling to one saved track and highlights only that track.
-* - [highlight] - Updates runtime selection highlights for saved tracks.
-* - [onImported] - Publishes imported tracks and focuses the first imported header.
-* - [setVisible] - Updates a track's visibility and queues loading or unloads cached geometry.
-* - [delete] - Removes selected saved tracks from memory and queues deletion of their paired files.
-* - [validName] - Checks that a track filename stem is nonblank and contains no forbidden path characters.
-* - [rename] - Renames a track's data and header files and updates cached metadata.
-* - [merge] - Concatenates tracks oldest-first into a hidden track and optionally deletes originals.
-* - [uniqueName] - Finds an unused filename stem by adding numbered suffixes.
-* - [tracksInArea] - Finds completed tracks whose geographic bounding boxes intersect an area.
-* - [nearestByStart] - Finds the saved track whose start is closest to a position.
+/** Сохранённые треки: сводки всех, геометрия только видимых. Список меняется в главном потоке, работа с файлами -
+    в потоке "io". Трек везде опознаётся по id (имя файла точек), имя - только для показа. Сводки сохраняет DataStore.
 */
 object TrackStorage {
 
@@ -67,44 +36,20 @@ object TrackStorage {
   * @return Serialized executor for file operations, wrapped in the background failure guard.
   */
   val io: Executor = Failures.guarded(Executors.newSingleThreadExecutor { Thread(it, "io") }, FailureSource.BACKGROUND)
-  private val INVALID_NAME_CHARS = Regex("""[\\/:*?"<>|]""")
 
   // Sorted: newer first; with the same start the longer one (a merged track) goes above.
-  /**
-  * Observable saved-track headers sorted newest first; mutate through store operations on the main thread.
-  * @return Observable saved-track headers sorted newest first; mutate through store operations on the main thread.
-  */
   val tracks = mutableStateListOf<TrackHeader>()
 
-  /**
-  * Published geometry snapshots indexed by filename stem; background loads replace the map as a whole.
-  * @return Published geometry snapshots indexed by filename stem; background loads replace the map as a whole.
-  */
+  /** Геометрия видимых треков по id; фоновая загрузка заменяет карту целиком */
   @Volatile
   var loaded: Map<String, TrackLine> = emptyMap()
     private set
 
-  /**
-  * Saved-track name requested for one-time list scrolling, or null.
-  * @return Saved-track name requested for one-time list scrolling, or null.
-  */
-  var scrollTarget by mutableStateOf<String?>(null)
-  /**
-  * Whether the current recording's row is highlighted at runtime.
-  * @return Whether the current recording's row is highlighted at runtime.
-  */
-  var currentHighlighted by mutableStateOf(false)
+  var scrollTarget by mutableStateOf<String?>(null) /** id трека, к которому один раз прокручивается список */
+  var currentHighlighted by mutableStateOf(false) /** Строка текущей записи подсвечена */
     private set
-  /**
-  * Pending request to scroll the list to the active recording.
-  * @return Pending request to scroll the list to the active recording.
-  */
-  var scrollToCurrent by mutableStateOf(false)
+  var scrollToCurrent by mutableStateOf(false) /** Запрос прокрутки списка к текущей записи */
 
-  /**
-  * Requests scrolling to the current recording and clears saved-track highlights.
-  * @return Unit; affects runtime UI state only.
-  */
   fun focusCurrent() {
     highlight(emptyList())
     currentHighlighted = true
@@ -114,200 +59,120 @@ object TrackStorage {
 
   private val order = compareByDescending<TrackHeader> { it.start }.thenByDescending { it.end }
 
-  // Tracks listed in data.xml plus data files it does not know, which become visible. The newest unfinished track goes on
-  // as the current one, unless the current one has data already. Runs on the "io" thread.
-  /**
-  * Reconciles listed tracks with data files and offers the newest unfinished track to the recorder.
-  *
-  * Usage: Run on the IO executor; adoption may wait for the GPS worker.
-  * @param listed Track headers referenced by the loaded application data.
-  * @return Saved-track headers excluding a successfully resumed recording.
+  /** Сверка data.xml с файлами при загрузке, поток "io". Трек без файла отбрасывается; файл, которого data.xml
+      не знает, становится видимым треком со сводкой из файла. Активный трек продолжает запись, если текущая пуста,
+      иначе закрывается по своему файлу и попадает в список.
   */
-  fun collect(listed: List<TrackHeader>): List<TrackHeader> {
-    val names = listed.map { it.name }.toSet()
+  fun collect(listed: List<TrackHeader>, active: TrackHeader?): List<TrackHeader> {
+    val present = listed.filter { TrackFiles.dataFile(it.id).isFile }
+    val known = (listed.map { it.id } + listOfNotNull(active?.id)).toSet()
     val unlisted = AppDirs.tracks.listFiles { file -> file.extension == TRACK_DATA_EXT }.orEmpty().mapNotNull { file ->
-      val name = file.nameWithoutExtension
-      if (name in names) return@mapNotNull null
-      TrackFiles.readHeader(name, visible = true) ?: TrackFiles.buildHeader(name, visible = true)?.also { TrackFiles.writeHeader(it) }
+      val id = file.nameWithoutExtension
+      if (id in known) null else TrackFiles.scan(id, null, visible = true)
     }
-    val all = listed + unlisted
-    val candidate = all.filter { !it.complete }.maxByOrNull { it.start } ?: return all
-    return if (TrackRecorder.adopt(candidate)) all.filter { it.name != candidate.name } else all
+    val all = present + unlisted
+    if (active == null || !TrackFiles.dataFile(active.id).isFile || TrackRecorder.adopt(active)) return all
+    return all + listOfNotNull(TrackFiles.scan(active.id, active.name, active.visible))
   }
 
-  /**
-  * Replaces stored headers, sorts them newest first and queues geometry loads for visible tracks.
-  * @param headers Track metadata records selected for the operation.
-  * @return Unit; call on the main thread.
-  */
   fun onLoaded(headers: List<TrackHeader>) {
     tracks.clear()
     tracks.addAll(headers.sortedWith(order))
     headers.filter { it.visible }.forEach(::load)
   }
 
-  /**
-  * Looks up a saved track by its filename stem.
-  * @param name Saved-track filename stem used as the lookup key.
-  * @return The header, or null when absent.
-  */
-  fun find(name: String) = tracks.firstOrNull { it.name == name }
+  fun find(id: String) = tracks.firstOrNull { it.id == id }
 
-  // A new track took the name of an old file.
-  /**
-  * Removes an old header and cached geometry after its name is reused by a recording.
-  * @param name Filename stem whose old metadata and loaded geometry must be forgotten.
-  * @return Unit; schedules persistence when the list changed; does not delete the reused file.
-  */
-  fun forget(name: String) {
-    if (tracks.removeAll { it.name == name }) DataStore.scheduleSave()
-    unload(name)
-  }
-
-  /**
-  * Adds or replaces a finished track header and loads its geometry when visible.
-  * @param header Track metadata used by the requested operation.
-  * @return Unit; schedules persistence.
-  */
+  /** Добавляет или заменяет законченный трек и загружает геометрию видимого */
   fun onSaved(header: TrackHeader) {
     insert(header)
     if (header.visible) load(header)
     DataStore.scheduleSave()
   }
 
-  // Copies imported tracks under free names with their headers. Runs on the "io" thread.
-  /**
-  * Copies imported track data under unused names and writes matching headers.
-  *
-  * Usage: Run on the IO executor; publish results separately through onImported.
-  * @param headers Track metadata records selected for the operation.
-  * @param dir Directory from which referenced files are read or into which files are written.
-  * @return Successfully imported headers; individual copy failures are logged.
-  */
-  fun importFiles(headers: List<TrackHeader>, dir: File): List<TrackHeader> {
-    val source = DataIO.tracksDir(dir)
-    return headers.mapNotNull { header ->
-      val name = uniqueName(header.name)
-      runCatching {
-        TrackFiles.dataFile(header.name, source).copyTo(TrackFiles.dataFile(name))
-        val imported = if (header.complete) header.copy(name = name) else TrackFiles.buildHeader(name, header.visible) ?: header.copy(name = name)
-        imported.also { TrackFiles.writeHeader(it) }
-      }.onFailure { Log.w("xTravel", "Track not imported: ${header.name}", it) }.getOrNull()
-    }
+  /** Тот же трек уже сохранён: совпадают время и место начала и конца и число точек */
+  fun duplicateOf(header: TrackHeader): TrackHeader? = tracks.firstOrNull {
+    it.start == header.start && it.end == header.end && it.points == header.points &&
+      GeoMath.samePlace(it.startLat, it.startLon, header.startLat, header.startLon) &&
+      GeoMath.samePlace(it.endLat, it.endLon, header.endLat, header.endLon)
   }
 
-  // Track already saved: the same start and end, the same number of points, the same first and last point. An unfinished track
-  // has nothing to compare, the one being recorded is not in the list; both are always taken as new.
-  /**
-  * Finds a completed track with matching times, count and rounded endpoint coordinates.
-  * @param header Track metadata used by the requested operation.
-  * @return The matching saved header, or null; unfinished tracks never match.
-  */
-  fun duplicateOf(header: TrackHeader): TrackHeader? {
-    if (!header.complete) return null
-    return tracks.firstOrNull {
-      it.complete && it.start == header.start && it.end == header.end && it.points == header.points &&
-        GeoMath.samePlace(it.startLat, it.startLon, header.startLat, header.startLon) &&
-        GeoMath.samePlace(it.endLat, it.endLon, header.endLat, header.endLon)
-    }
-  }
-
-  // The list is asked to show this track: it scrolls to it and marks the row. The mark stays until another track is marked.
-  /**
-  * Requests scrolling to one saved track and highlights only that track.
-  * @param name Saved-track filename stem to scroll to and highlight.
-  * @return Unit; clears the current-recording highlight.
-  */
-  fun focus(name: String) {
+  /** Прокрутка списка к треку и подсветка только его; подсветка держится до следующей */
+  fun focus(id: String) {
     scrollToCurrent = false
-    scrollTarget = name
-    highlight(listOf(name))
+    scrollTarget = id
+    highlight(listOf(id))
   }
 
-  // Marks the rows of the given tracks and clears the mark of all the others. The flag lives in memory only, nothing is saved.
-  /**
-  * Updates runtime selection highlights for saved tracks.
-  * @param names Track filename stems to highlight.
-  * @return Unit; does not persist highlight state.
-  */
-  fun highlight(names: Collection<String>) {
+  /** Подсветка строк треков из ids, у остальных снимается. Только в памяти */
+  fun highlight(ids: Collection<String>) {
     currentHighlighted = false
     tracks.forEachIndexed { index, header ->
-      val on = header.name in names
+      val on = header.id in ids
       if (header.highlighted != on) tracks[index] = header.copy(highlighted = on)
     }
   }
 
-  /**
-  * Publishes imported tracks and focuses the first imported header.
-  * @param headers Track metadata records selected for the operation.
-  * @return Unit; delegates saving and geometry loading to onSaved.
-  */
   fun onImported(headers: List<TrackHeader>) {
     headers.forEach(::onSaved)
-    headers.firstOrNull()?.let { focus(it.name) }
+    headers.firstOrNull()?.let {
+      scrollToCurrent = false
+      scrollTarget = it.id
+    }
   }
 
-  /**
-  * Updates a track's visibility and queues loading or unloads cached geometry.
-  * @param header Track metadata used by the requested operation.
-  * @param visible Whether the point, route or track should be displayed.
-  * @return Unit; schedules persistence.
-  */
   fun setVisible(header: TrackHeader, visible: Boolean) {
     val updated = header.copy(visible = visible)
-    replace(header.name, updated)
+    replace(updated)
     DataStore.scheduleSave()
-    if (visible) load(updated) else unload(header.name)
+    if (visible) load(updated) else unload(header.id)
   }
 
-  /**
-  * Removes selected saved tracks from memory and queues deletion of their paired files.
-  * @param headers Track metadata records selected for the operation.
-  * @return Unit; file removal is asynchronous.
-  */
+  /** Убирает треки из списка и ставит удаление их файлов в поток "io" */
   fun delete(headers: List<TrackHeader>) {
     headers.forEach { header ->
-      tracks.removeAll { it.name == header.name }
-      unload(header.name)
+      tracks.removeAll { it.id == header.id }
+      unload(header.id)
     }
     DataStore.scheduleSave()
+    io.execute { headers.forEach { TrackFiles.dataFile(it.id).delete() } }
+  }
+
+  /** Удаляет точки трека (TrackFiles.removeSamples) и пересчитывает сводку по файлу; трек без точек удаляется */
+  fun removePoints(header: TrackHeader, rows: Map<Int, String>) {
+    val id = header.id
     io.execute {
-      headers.forEach {
-        TrackFiles.dataFile(it.name).delete()
-        TrackFiles.headerFile(it.name).delete()
+      val removed = TrackFiles.removeSamples(TrackFiles.dataFile(id), rows)
+      val updated = if (removed) TrackFiles.scan(id, header.name, header.visible) else null
+      main.post {
+        val actual = find(id) ?: return@post
+        when {
+          !removed -> Notify.error(R.string.track_point_not_removed)
+          updated == null -> delete(listOf(actual))
+          else -> {
+            replace(updated.copy(name = actual.name, visible = actual.visible, highlighted = actual.highlighted))
+            DataStore.scheduleSave()
+            if (actual.visible) load(updated)
+          }
+        }
       }
     }
   }
 
-  /**
-  * Checks that a track filename stem is nonblank and contains no forbidden path characters.
-  * @param name Candidate filename stem checked for blank text and forbidden characters.
-  * @return True when the name passes these checks.
-  */
-  fun validName(name: String) = name.isNotBlank() && !INVALID_NAME_CHARS.containsMatchIn(name)
+  fun validName(name: String) = name.isNotBlank()
 
-  /**
-  * Renames a track's data and header files and updates cached metadata.
-  *
-  * Usage: Call on the main thread; file operations here are synchronous.
-  * @param header Track metadata used by the requested operation.
-  * @param newName Validated filename stem without extension; existing data or active-recording names cause EXISTS.
-  * @return OK, EXISTS or INVALID according to validation and the data-file rename outcome.
-  */
+  /** Имя трека не связано с файлом: меняется только сводка. Занятое имя другого трека или текущей записи - EXISTS */
   fun rename(header: TrackHeader, newName: String): RenameResult {
     if (!validName(newName)) return RenameResult.INVALID
     if (newName == header.name) return RenameResult.OK
-    if (TrackFiles.dataFile(newName).exists() || newName == TrackRecorder.name) return RenameResult.EXISTS
-    val renamedData = TrackFiles.dataFile(header.name).renameTo(TrackFiles.dataFile(newName))
-    if (!renamedData) return RenameResult.INVALID
-    TrackFiles.headerFile(header.name).renameTo(TrackFiles.headerFile(newName))
-    val updated = header.copy(name = newName)
-    replace(header.name, updated)
-    loaded[header.name]?.let { line -> loaded = loaded - header.name + (newName to line) }
+    if (nameTaken(newName, header.id) || newName == TrackRecorder.name) return RenameResult.EXISTS
+    replace(header.copy(name = newName))
     DataStore.scheduleSave()
     return RenameResult.OK
   }
+
+  /** Имя занято сохранённым треком, кроме трека exceptId */
+  fun nameTaken(name: String, exceptId: String? = null) = tracks.any { it.name == name && it.id != exceptId }
 
   // Joins the tracks from the oldest to the newest; the result is hidden and goes above its first source.
   /**
@@ -323,36 +188,30 @@ object TrackStorage {
     if (sources.size < 2) return
     io.execute {
       val merged = runCatching { writeMerged(sources) }.onFailure { Log.w("xTravel", "Merge failed", it) }.getOrNull()
-      if (deleteSources && merged != null) {
-        sources.forEach {
-          TrackFiles.dataFile(it.name).delete()
-          TrackFiles.headerFile(it.name).delete()
-        }
-      }
+      if (deleteSources && merged != null) sources.forEach { TrackFiles.dataFile(it.id).delete() }
       main.post {
         if (merged == null) {
           Notify.error(R.string.merge_failed)
           return@post
         }
-        if (deleteSources) sources.forEach { source -> tracks.removeAll { it.name == source.name }; unload(source.name) }
+        if (deleteSources) sources.forEach { source -> tracks.removeAll { it.id == source.id }; unload(source.id) }
         insert(merged)
-        focus(merged.name)
+        focus(merged.id)
         DataStore.scheduleSave()
       }
     }
   }
 
   private fun writeMerged(sources: List<TrackHeader>): TrackHeader {
-    val last = sources.last()
-    val baseName = "${TrackTime.name(sources.first().start)} - ${TrackTime.name(if (last.complete) last.end else last.start)}"
-    val name = uniqueName(baseName)
+    val name = "${TrackTime.name(sources.first().start)} - ${TrackTime.name(sources.last().end)}"
+    val id = TrackFiles.newId()
     val fields = TrackFields.ALL
     val builder = HeaderBuilder()
-    TrackFiles.dataFile(name).bufferedWriter().use { out ->
+    TrackFiles.dataFile(id).bufferedWriter().use { out ->
       TrackFiles.writeFieldLine(out, fields)
       sources.forEach { source ->
         var sourceFields: List<String> = emptyList()
-        TrackFiles.forEachSample(TrackFiles.dataFile(source.name), { sourceFields = it }) { time, lat, lon, parts ->
+        TrackFiles.forEachSample(TrackFiles.dataFile(source.id), { sourceFields = it }) { time, lat, lon, parts ->
           val row = fields.map { field -> sourceFields.indexOf(field).let { if (it >= 0) parts.getOrElse(it) { "" } else "" } }
           out.write(row.joinToString(";"))
           out.write("\n")
@@ -360,84 +219,61 @@ object TrackStorage {
         }
       }
     }
-    val header = builder.build(name, visible = false, fields = fields)
-    TrackFiles.writeHeader(header)
-    return header
+    return builder.build(id, name, visible = false)
   }
-
-  // "Name", "Name (2)", "Name (3)"...
-  /**
-  * Finds an unused filename stem by adding numbered suffixes.
-  *
-  * Usage: This lookup does not reserve the returned name.
-  * @param base Preferred filename stem before adding a unique numbered suffix.
-  * @return A name unused by existing files, saved headers and the active recording.
-  */
-  fun uniqueName(base: String): String {
-    var name = base
-    var index = 2
-    while (TrackFiles.dataFile(name).exists() || tracks.any { it.name == name } || name == TrackRecorder.name) name = "$base (${index++})"
-    return name
-  }
-
-  /**
-  * Finds completed tracks whose geographic bounding boxes intersect an area.
-  * @param minLat Southern bound in geographic degrees.
-  * @param minLon Western bound in geographic degrees.
-  * @param maxLat Northern bound in geographic degrees.
-  * @param maxLon Eastern bound in geographic degrees.
-  * @return Matching headers; this tests bounding boxes rather than every sample.
-  */
-  fun tracksInArea(minLat: Double, minLon: Double, maxLat: Double, maxLon: Double): List<TrackHeader> =
-    tracks.filter { it.complete && it.maxLat >= minLat && it.minLat <= maxLat && it.maxLon >= minLon && it.minLon <= maxLon }
-
-  /**
-  * Finds the saved track whose start is closest to a position.
-  * @param point Geographic position in latitude/longitude degrees.
-  * @return The nearest header, or null when the collection is empty.
-  */
-  fun nearestByStart(point: GeoPoint): TrackHeader? =
-    tracks.minByOrNull { GeoMath.distance(point.lat, point.lon, it.startLat, it.startLon) }
 
   private fun insert(header: TrackHeader) {
-    tracks.removeAll { it.name == header.name }
+    tracks.removeAll { it.id == header.id }
     val index = tracks.indexOfFirst { order.compare(header, it) < 0 }
     if (index < 0) tracks.add(header) else tracks.add(index, header)
   }
 
-  private fun replace(name: String, header: TrackHeader) {
-    val index = tracks.indexOfFirst { it.name == name }
+  private fun replace(header: TrackHeader) {
+    val index = tracks.indexOfFirst { it.id == header.id }
     if (index >= 0) tracks[index] = header
   }
 
-  // The header of an unfinished track is completed on the way: all its data is read anyway.
-  private fun load(header: TrackHeader) {
-    val name = header.name
+  /** Проекция геометрии треков: её задаёт карта при рисовании (useProjection). Главный поток */
+  private var projection: IMapProjection = MercatorProjection
+
+  /** Карта рисует в другой проекции: загруженная геометрия пересчитывается в потоке "io", новая читается сразу в ней */
+  fun useProjection(target: IMapProjection) {
+    if (target === projection) return
+    projection = target
+    val lines = loaded
     io.execute {
-      val builder = if (header.complete) null else HeaderBuilder()
-      val line = TrackFiles.readLine(name, builder)
-      val rebuilt = builder?.takeIf { it.count > 0 }?.build(name, header.visible, header.fields)
-      rebuilt?.let { runCatching { TrackFiles.writeHeader(it) } }
+      val converted = lines.mapValues { it.value.reprojected(target) }
       main.post {
-        val known = find(name) ?: return@post
-        if (rebuilt != null) replace(name, rebuilt.copy(visible = known.visible))
-        if (known.visible) {
-          loaded = loaded + (name to line)
-          ModuleHost.requestRedraw()
-        }
+        if (projection !== target) return@post
+        loaded = loaded.mapValues { (id, line) -> if (line.projection === target) line else converted[id] ?: line }
+        ModuleHost.requestRedraw()
       }
     }
   }
 
-  private fun unload(name: String) {
-    if (name !in loaded) return
-    loaded = loaded - name
+  private fun load(header: TrackHeader) {
+    val id = header.id
+    val target = projection
+    io.execute {
+      val line = TrackFiles.readLine(id, target)
+      main.post {
+        if (find(id)?.visible != true) return@post
+        // Пока файл читался, карта сменила проекцию: читается заново.
+        if (line.projection !== projection) return@post load(header)
+        loaded = loaded + (id to line)
+        ModuleHost.requestRedraw()
+      }
+    }
+  }
+
+  private fun unload(id: String) {
+    if (id !in loaded) return
+    loaded = loaded - id
     ModuleHost.requestRedraw()
   }
 }
 
-/** Владелец сохранённых треков: в секции tracks только имя и видимость,
-    всё остальное лежит в парных файлах трека. */
+/** Владелец секции tracks: сводки сохранённых треков и активной записи (атрибут active), файлы точек - tracks/<id>.xtrack */
 object TracksData : IDataOwner {
 
   /** Ищет по именам сохранённых треков. */
@@ -447,17 +283,14 @@ object TracksData : IDataOwner {
         if (TrackRecorder.name == name) {
           TrackStorage.focusCurrent()
           AppCommands.showTracks.execute()
-        } else if (TrackStorage.find(name) != null) {
-          TrackStorage.focus(name)
-          AppCommands.showTracks.execute()
         }
       }
     }
     return listOfNotNull(current) + TrackStorage.tracks.mapNotNull { header ->
       if (!header.name.contains(text, ignoreCase = true)) return@mapNotNull null
       DataFound(header.name, R.drawable.ic_track, R.string.tracks) {
-        if (TrackStorage.find(header.name) != null) {
-          TrackStorage.focus(header.name)
+        if (TrackStorage.find(header.id) != null) {
+          TrackStorage.focus(header.id)
           AppCommands.showTracks.execute()
         }
       }
@@ -466,47 +299,59 @@ object TracksData : IDataOwner {
 
   override val tag = "tracks"
 
-  /**
-  * Writes saved-track names, visibility and paired files as an XML section and places associated files in the target directory.
-  * @param set Snapshot of selected application data to serialize or export.
-  * @param dir Directory from which referenced files are read or into which files are written.
-  * @param xml XML serializer already positioned inside the owning document or section.
-  * @return Unit; run on the IO executor with the serializer inside the xTravel root.
-  */
   override fun write(set: DataSet, dir: File, xml: XmlSerializer) {
     val target = DataIO.tracksDir(dir)
     xml.startTag(null, tag)
-    set.tracks.forEach { header ->
+    set.active?.let { xml.attribute(null, "active", it.id) }
+    (set.tracks + listOfNotNull(set.active)).forEach { header ->
       xml.startTag(null, "track")
+      xml.attribute(null, "file", header.id)
       xml.attribute(null, "name", header.name)
       xml.attribute(null, "visible", header.visible.toString())
+      xml.attribute(null, "start", TrackTime.format(header.start))
+      xml.attribute(null, "start-lat", header.startLat.toString())
+      xml.attribute(null, "start-lon", header.startLon.toString())
+      xml.attribute(null, "end", TrackTime.format(header.end))
+      xml.attribute(null, "end-lat", header.endLat.toString())
+      xml.attribute(null, "end-lon", header.endLon.toString())
+      xml.attribute(null, "points", header.points.toString())
       xml.endTag(null, "track")
-      DataIO.place(TrackFiles.dataFile(header.name), TrackFiles.dataFile(header.name, target))
-      if (!TrackFiles.headerFile(header.name, target).exists()) TrackFiles.writeHeader(header, target)
+      DataIO.place(TrackFiles.dataFile(header.id), TrackFiles.dataFile(header.id, target))
     }
     xml.endTag(null, tag)
   }
 
-  // A track without its data file is dropped; a missing header is built from the data.
-  /**
-  * Reads saved-track names, visibility and paired files into the import accumulator.
-  *
-  * Usage: Start on the section opening tag; file references resolve relative to dir.
-  * @param parser XML pull parser positioned at the opening tag to consume.
-  * @param dir Directory from which referenced files are read or into which files are written.
-  * @param result Mutable import accumulator receiving parsed records.
-  * @return Unit; consumes the current XML section.
-  */
-  override fun read(parser: XmlPullParser, dir: File, result: LoadedData) {
-    val source = DataIO.tracksDir(dir)
+  // Трек без файла пропускается; неполная сводка строится по файлу. Из источника импорта (dir = null) файла ещё нет:
+  // трек с неполной сводкой отмечается в rescan, сводку построит импорт после распаковки файла.
+  override fun read(parser: XmlPullParser, dir: File?, result: LoadedData) {
+    val source = dir?.let(DataIO::tracksDir)
+    val active = parser.attr("active")
     parser.forEachChild { name ->
       if (name != "track") return@forEachChild
-      val track = parser.attr("name") ?: return@forEachChild
+      val id = parser.attr("file") ?: return@forEachChild
+      if (source != null && !TrackFiles.dataFile(id, source).isFile) return@forEachChild
       val visible = parser.attr("visible")?.toBoolean() ?: true
-      if (!TrackFiles.dataFile(track, source).isFile) return@forEachChild
-      val header = TrackFiles.readHeader(track, visible, source)
-        ?: TrackFiles.buildHeader(track, visible, source)?.also { runCatching { TrackFiles.writeHeader(it, source) } }
-      header?.let { result.tracks += it }
+      val header = readHeader(parser, id) ?: when (source) {
+        null -> TrackHeader(id, parser.attr("name") ?: id, 0L, 0L, 0.0, 0.0, 0.0, 0.0, 0, visible).also { result.rescan += id }
+        else -> TrackFiles.scan(id, parser.attr("name"), visible, source)
+      }
+      if (header == null) return@forEachChild
+      if (id == active) result.active = header else result.tracks += header
     }
   }
+
+  private fun readHeader(parser: XmlPullParser, id: String): TrackHeader? = runCatching {
+    TrackHeader(
+      id = id,
+      name = parser.attr("name")!!,
+      start = TrackTime.parse(parser.attr("start")!!)!!,
+      end = TrackTime.parse(parser.attr("end")!!)!!,
+      startLat = parser.attr("start-lat")!!.toDouble(),
+      startLon = parser.attr("start-lon")!!.toDouble(),
+      endLat = parser.attr("end-lat")!!.toDouble(),
+      endLon = parser.attr("end-lon")!!.toDouble(),
+      points = parser.attr("points")!!.toInt(),
+      visible = parser.attr("visible")?.toBoolean() ?: true
+    )
+  }.getOrNull()
 }

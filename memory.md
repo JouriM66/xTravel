@@ -8,6 +8,7 @@
 Запускать приложение только через `am start`: `adb shell monkey` при завершении включает системный автоповорот.
 `GRADLE_USER_HOME` = `D:\Android\gradle`; API подключённой версии MapKit — в `caches/modules-2/files-2.1/com.yandex.android/maps.mobile/<версия>/*/maps.mobile-<версия>.aar`.
 Файлы с русским текстом не править через PowerShell, только инструментами редактирования с UTF-8; чтение `Get-Content -Encoding UTF8` безопасно.
+Исходники не писать через heredoc и `sed a\` в Bash: обратные слэши искажаются (`"\\s"` стало `"\s"`, `\r` в путях стал CR). Только Write/Edit.
 
 ## Термины
 Точка — точка интереса (вейпоинт); маршрут — упорядоченный набор точек для посещения по очереди; трек — запись с GPS, сохраняемая приложением.
@@ -24,7 +25,17 @@ Material 3, тема `XTravelTheme` (`src/Ui.kt`). Иконки предметн
 `setLocale` принимает только `lang_COUNTRY`; язык без страны роняет `MapKitFactory.initialize`.
 `TransitOptions`, `TimeOptions`, `FitnessOptions`: конструктор без параметров только для десериализации, нативный биндинг падает на `GetObjectField`. Заполнять явно: `TransitOptions(FilterVehicleTypes.NONE.value, TimeOptions())`.
 Роутеры: `PedestrianRouter`, `BicycleRouterV2`, `MasstransitRouter` (`TransportFactory`), `DrivingRouter` (`DirectionsFactory`, грузовой — `VehicleOptions` с `VehicleType.TRUCK`). Манёвры и готовую длину пути даёт только автомобильный ответ. Сессию запроса держать ссылкой, иначе ответа не будет.
-Экранные позиции своего слоя брать только от `MapWindow.worldToScreen` (`YandexMapEngine.calibration`): расчёт по формуле уводит объекты от карты тем сильнее, чем дальше от центра и южнее место.
+Под подложкой MapKit центр и масштаб своего слоя брать только от `MapWindow.worldToScreen` (`YandexMapEngine.calibration`):
+  расчёт по формуле уводит объекты от карты тем сильнее, чем дальше от центра и южнее место. Движок без своей карты калибровку не даёт.
+  Проекция задаётся движком (`IMapEngine.projection`, по умолчанию эллиптический Mercator EPSG:3395 под Яндекс); тайлы OSM — Web Mercator EPSG:3857.
+  Свои слои проецировать только проекцией вьюпорта, не `MercatorProjection` напрямую: на встроенной карте объекты уезжают на десятки км.
+В движке карты (`IMapEngine`) не заводить свойство `camera`: его сеттер совпадает по сигнатуре JVM с `setCamera` (CONFLICTING_JVM_DECLARATIONS).
 Внутри `DrawScope` поле класса `center` перекрывается `DrawScope.center` — полей с такими именами в классах с рисованием не заводить.
 Android 12+: `ACCESS_FINE_LOCATION` запрашивать вместе с `ACCESS_COARSE_LOCATION`, иначе система молча отклоняет.
+CI (GitHub Actions, репозиторий JouriM66/xTravel): `gh` не установлен, логи запусков без входа не видны, но статус, шаги и аннотации — через публичный API
+  `api.github.com/repos/JouriM66/xTravel/actions/runs`, `check-runs/<job id>/annotations`; ошибку Gradle сборка кладёт в аннотацию.
+  Пакет SDK платформы 37 называется `platforms;android-37.0`. `kotlin.project.persistent.dir=output/kotlin` относительный:
+  на Linux Kotlin не находит сессии (`NoSuchFileException ... .salive`), в CI передаётся абсолютным путём через `-P`.
+`ZipInputStream` медленный (около 20 МБ/с на телефоне): распаковщику подаёт по 512 байт и проходит архив целиком.
+  Когда источник даёт произвольный доступ, записи читать по оглавлению (`src/utils/ZipCatalog.kt`).
 MIUI в тёмной теме перекрашивает светлые приложения: `android:forceDarkAllowed=false` (`values-v29`).

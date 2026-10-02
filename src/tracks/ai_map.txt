@@ -1,35 +1,47 @@
 русский текст для того чтобы редакторы не путали кодировку
 
 src\tracks\ - треки: запись с GPS, сохраняемая приложением. Получение позиции - в src\GPS\.
-Файлы трека всегда парные: <имя>.xtrack (данные) и <имя>.xtrackh (заголовок).
+Трек опознаётся ВЕЗДЕ по id - UUID, он же имя файла точек tracks\<id>.xtrack. Имя трека - только для показа,
+с файлом не связано, хранится в data.xml вместе со сводкой (начало, конец, число точек). Других файлов у трека нет.
 
 TrackFormat.kt - формат файлов.
   TrackFields: TIME, LAT, LON, ELE, SPEED, COURSE, HACC, VACC, SACC, CACC, SAT;
-    ALL - канонический порядок записи.
-  TRACK_DATA_EXT, TRACK_HEADER_EXT.
-  TrackTime: format, parse, name (имя файла по местной минуте).
-  TrackHeader: границы, концы, времена, метаданные. complete = false - незавершённый,
-    в нём только начало. Видимость в заголовок НЕ пишется, она в data.xml.
-  TrackLine: спроецированные координаты для рисования, валидны индексы от from до size-1.
-  HeaderBuilder: add, build, buildOpen, count, firstLat, firstLon, startTime. openHeader.
-  TrackFiles: dataFile, headerFile, writeFieldLine, writeFix, writeHeader, readHeader,
-    buildHeader, readLine, forEachSample. Выбор потока и сериализацию делает вызывающий.
+    ALL - канонический порядок записи. Первая строка файла - список полей, разбор берёт столбцы по именам.
+  TRACK_DATA_EXT.
+  TrackTime: format, parse, name (имя трека по умолчанию по местной минуте).
+  TrackHeader: id, name, начало и конец (время и координаты), points, visible; highlighted живёт только в памяти.
+    Дубль - точное совпадение начала, конца и points (TrackStorage.duplicateOf).
+  TrackLine: спроецированные координаты для рисования, валидны индексы от from до size-1; projection, reprojected(target).
+    Проекцию линий задаёт карта: слои треков при рисовании зовут TrackStorage.useProjection и TrackRecorder.useProjection
+    проекцией вьюпорта; линия в чужой проекции не рисуется и не попадается касанием, пока не пересчитана.
+  HeaderBuilder: add, build(id, name, visible), count, startTime.
+  TrackFiles: newId, dataFile(id), writeFieldLine, writeFix, scan (сводка полным чтением файла), readLine(id, projection), forEachSample,
+    removeSamples(file, rows) (номер в счёте forEachSample -> строка; не та строка - файл не меняется).
+    Выбор потока и сериализацию делает вызывающий.
+
+TrackAnalysis.kt - точки трека для карточки.
+  TrackSample (row - исходная строка, по ней сверяется удаление), TrackData (samples, distances, length, issues, ascent, descent, EMPTY),
+  TrackIssue, TrackIssueReason (текст причины). TrackAnalysis.read(id): чтение файла и поиск ошибок, поток вызывающего.
+  Пороги ошибок - константы в начале файла.
+
+TrackChart.kt
+  ElevationChart(data): график высот по номерам точек, масштаб и сдвиг только по горизонтали.
 
 TrackRecorder.kt - текущая запись, работает в потоке "gps".
-  line (хвост для рисования), current, name, hasFile, visible, pointCount,
-  start, stop (файл закрыт, трек НЕ завершён), restart (завершить и начать новый),
-  discard, adopt (продолжить незавершённый при старте), rename.
-  Файл данных создаётся после Settings.minPoints отсчётов, до того точки копятся в памяти.
+  line (хвост для рисования), current (сводка; id пустой, пока нет файла), name, hasFile, visible, pointCount,
+  start, stop (файл закрыт, трек остаётся активным), restart (завершить и начать новый), removePoints(rows),
+  discard, adopt (продолжить активный трек из data.xml при старте), rename (только имя, файл не трогается), useProjection.
+  Файл создаётся после Settings.minPoints отсчётов и НЕ РАНЬШЕ DataStore.isLoaded, до того точки копятся в памяти.
+  Создание файла, переименование, завершение и удаление зовут DataStore.scheduleSave: активный трек живёт в data.xml.
 
-TrackStorage.kt - сохранённые треки. Заголовки в главном потоке, файлы в потоке "io".
-  io (исполнитель с перехватом фоновых сбоев), tracks, loaded, scrollTarget,
+TrackStorage.kt - сохранённые треки. Сводки в главном потоке, файлы в потоке "io".
+  io (исполнитель с перехватом фоновых сбоев), tracks, loaded (по id), scrollTarget (id),
   currentHighlighted, scrollToCurrent, focusCurrent,
-  collect (сверка data.xml с файлами; самый новый незавершённый уходит в TrackRecorder.adopt),
-  onLoaded, find, forget, onSaved, setVisible, delete, validName, rename, merge,
-  uniqueName, importFiles, onImported, duplicateOf, tracksInArea, nearestByStart,
-  focus, highlight.
-  RenameResult. TracksData: секция tracks - только имя и видимость.
-  TrackHeader.highlighted живёт только в памяти.
+  collect(listed, active) (сверка data.xml с файлами; активный уходит в TrackRecorder.adopt, иначе закрывается по файлу),
+  onLoaded, find(id), onSaved, setVisible, useProjection, delete, removePoints (трек без точек удаляется), validName, nameTaken, rename, merge,
+  onImported, duplicateOf, focus(id), highlight(ids).
+  RenameResult. TracksData: секция tracks - <tracks active="id"> и <track file name visible start start-lat start-lon
+    end end-lat end-lon points/>; активная запись пишется только при полном сохранении (DataSet.active).
 
 TrackModules.kt - слои карты.
   SavedTracksLayer, CurrentTrackLayer: draw, hitTest. Касание трека открывает TrackMapMenu
@@ -42,9 +54,11 @@ TracksSheet.kt - список треков.
   Меню трека, у текущего своё - CurrentTrackMenu. Смахивание - удаление. "Поделиться" во всех меню трека и в режиме
     выбора - общее меню Storage\GeoDataShare.kt; у текущего трека без файла набор пуст.
   Долгое нажатие - TrackSelectionEditor: чекбоксы, поделиться, объединить, удалить;
-    у текущего трека чекбокса нет. toggleSelectedTrack(name): касание трека на карте в этом режиме
+    у текущего трека чекбокса нет. toggleSelectedTrack(id): касание трека на карте в этом режиме
     переключает выбор и прокручивает список вместо меню, касание текущего ничего не делает.
   TrackActions: goToStart, goToEnd, rename, renameCurrent, delete, deleteCurrent.
-  TrackMapMenu (трек, тронутый на карте), TrackPropertiesEditor.
+  TrackMapMenu(id), TrackPropertiesEditor(id) - карточка трека; id null - текущая запись.
+    Карточка читает файл трека (TrackAnalysis) при каждом изменении сводки, у растущей записи не чаще раза в 2 с:
+    информация, график высот, ошибки только если есть (касание - точка на карте, корзина - удаление точки, в заголовке - всех ошибочных).
 
 Отдача треков - провайдерами IGeoDataShare в Storage\ (XTravelShare, GpxShare).

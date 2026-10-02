@@ -1,7 +1,11 @@
 русский текст для того чтобы редакторы не путали кодировку
 
-src\map\ - подложка карты, камера, проекция, жесты, служебные слои, MapKit.
+src\map\ - общее для всех карт: абстракции подложки, камера, проекции, жесты, служебные слои, ссылки в приложения карт.
 Карта ПАССИВНА: своих жестов у подложки нет, камерой управляет только приложение.
+Реализации поставщиков - в подкаталогах со своими картами:
+  vector\  встроенная векторная карта без сети (PMTiles), MapType.NONE.
+  yandex\  Яндекс MapKit: подложка, маршруты, строки настроек, MapType.YANDEX.
+Сюда кладётся только независимое от поставщика.
 
 MapEngine.kt - типы и интерфейсы карты.
   GeoPoint(lat, lon): основной тип места во всём приложении.
@@ -9,19 +13,24 @@ MapEngine.kt - типы и интерфейсы карты.
   IMapProjection: tileSizeDp, toWorld, toGeo, metersPerWorldUnit.
   MapCalibration: где подложка на самом деле нарисовала центр камеры и сколько пикселей
     занимает шаг по миру. БЕЗ НЕЁ свои объекты уезжают с карты.
-  IRouteListener: onRouteReady, onRouteFailed.
   IMapEngine: setCamera, getInfoForPoint, settingsChanged, openExternal, handleTap,
-    start, stop, release, Backdrop, projection, calibration,
-    requestRoute (по умолчанию false - движок маршруты не строит).
-  MapType: выбор поставщика и createEngine; Яндекс без ключа MapKit даёт сетку.
+    start, stop, release, Backdrop, projection, calibration. Маршрутов движок карты не строит - route\RouteBuilders.kt.
+  MapType: выбор поставщика. createEngine - null, если поставщик недоступен (Яндекс без ключа), причина -
+    unavailableMessage; заменяет недоступного встроенной картой Maps, а не сам тип.
+    settings - строки редактора настроек поставщика (кнопка у "Изображение карты" в SettingsScreen.kt).
+    Принадлежат типу, а не движку: настройки с ключом нужны, когда движок создать нельзя.
+    NONE - пункт "Встроенный", векторная карта vector\ (VectorMapEngine), создаётся всегда.
 
 BlankMapEngine.kt
-  BlankMapEngine: пустой фон под своими слоями.
+  BlankMapEngine: белая подложка до создания движка выбранного поставщика. Сетки больше нет.
 
 MercatorProjection.kt
   WorldPoint, MercatorProjection: эллипсоидальный Меркатор WGS-84, как у Яндекса.
     MAX_LAT, tileSizeDp, toWorld, toGeo, metersPerWorldUnit.
     Расстояния и азимуты общего вида - в utils\GeoUtils.kt, не здесь.
+
+WebMercator.kt
+  WebMercatorProjection: сферический Меркатор EPSG:3857 (тайлы OSM, Protomaps), IMapProjection.
 
 MapViewport.kt
   MapViewport: перевод мир <-> экран для камеры и размера холста, метры на пиксель.
@@ -30,9 +39,11 @@ MapViewport.kt
 Maps.kt - камера приложения и слежение за позицией. Главный поток.
   PositionMode (START, CUSTOM, AUTO), MapDirection (север, автоповорот, ручной),
   PositionIndicator (состояние кнопки позиции и иконки уведомления GPS).
-  Maps: type, shownType, engine, camera, lastViewport (публикует MapArea), positionMode,
+  Maps: type, engine, camera, lastViewport (публикует MapArea), positionMode,
     init, select, disableEngine, move, moveByGesture, centerOn, showArea, followGps,
     onLocation, rotateTo, start, stop, save.
+    Недоступный поставщик (init, select) и сбойный (disableEngine, Failures MAP) заменяются встроенной картой,
+    Settings.mapType тоже ставится в NONE; сообщение - MapType.unavailableMessage. Прежний - только выбором вручную.
   Подписан на UserActivity: hold приостанавливает слежение за GPS и запоминает центр;
     на resume ручной режим включается только после сдвига ОДНИМ пальцем на заметное
     расстояние. Поворот, масштабирование и инерция режим НЕ переключают.
@@ -47,16 +58,8 @@ MapArea.kt
     showPlace: меню по заданным координатам; место вне видимой области переводит карту
     в ручной режим и центрует её на нём.
 
-MapModules.kt - служебные слои: GridModule (сетка без карты), TapMarkerModule (метка
-  открытого меню), CrosshairModule (крест в ручном режиме), ScaleBarModule (линейка).
-
-YandexMapEngine.kt - MapKit как пассивная подложка.
-  calibration через MapWindow.worldToScreen - единственный верный источник экранных позиций.
-  ensureReady: ключ из настроек, язык, инициализация. MapKit берёт ключ ОДИН РАЗ ЗА ПРОЦЕСС,
-    поэтому keyChanged при смене ставит restartNeeded.
-  Все вызовы MapKit обёрнуты Failures.guard(MAP).
-  openExternal (зовёт только касание логотипа), handleTap (касание логотипа открывает Яндекс Карты), licenseInfo,
-  setCamera, start, stop, release, Backdrop, settingsChanged.
+MapModules.kt - служебные слои: TapMarkerModule (метка открытого меню), CrosshairModule (крест в ручном режиме),
+  ScaleBarModule (линейка).
 
 MapLinkShare.kt - провайдеры IGeoDataShare (Storage\GeoDataShare.kt) ссылками в приложения карт.
   Места набора - остановки первого маршрута, без маршрутов - точки; одно место открывается точкой, несколько - маршрутом.
@@ -64,13 +67,6 @@ MapLinkShare.kt - провайдеры IGeoDataShare (Storage\GeoDataShare.kt) �
     приложения geo). yandexMapsLink(place): ссылка на место, её же берёт points\MetaInfoShare.kt.
   Видимость geo-приложений и пакетов Яндекс Карт и 2ГИС (их иконки) - queries в манифесте.
   Способ передвижения маршрута берётся из Settings.routeTransport.
-
-YandexRoutes.kt - запрос маршрутов у Яндекса.
-  YandexRoutes.request(способ передвижения, концы, слушатель).
-  Движки: PedestrianRouter, BicycleRouterV2, MasstransitRouter (TransportFactory, все три
-    отвечают типами masstransit) и DrivingRouter (DirectionsFactory).
-  Манёвры и готовую длину пути дают ТОЛЬКО автомобильные ответы, у остальных длина
-    считается по линии. Особенности вызова MapKit - в memory.md.
 
 AutoPosition.kt - два модуля, подписчики GPS и UserActivity.
   AutoPosition: возврат к авто-позиции после бездействия (Settings.autoPosition).

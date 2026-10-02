@@ -3,6 +3,7 @@ package com.jm.xtravel
 
 import android.os.Handler
 import android.os.Looper
+import java.text.Collator
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 
@@ -14,11 +15,12 @@ class GeoAnswer(val point: GeoPoint?, val name: String?, val description: String
 /** Geocoding search provider. */
 interface IGeoSearchEngine {
   val mustBeAsync: Boolean
+  val configured: Boolean /** Готов к запросам (например, введён ключ); ненастроенный не опрашивается */
   fun byPosition(point: GeoPoint): List<GeoAnswer>
   fun byText(text: String): List<GeoAnswer>
 }
 
-/** Coordinates registered geocoding providers. */
+/** Опрашивает все настроенные геокодеры и сводит их ответы в один список без повторов текста. */
 object GeoSearchManager {
   private val engines = CopyOnWriteArrayList<IGeoSearchEngine>()
   private val main = Handler(Looper.getMainLooper())
@@ -28,14 +30,17 @@ object GeoSearchManager {
     engines.addIfAbsent(engine)
   }
 
+  /** Порядок ответов сохраняется: первым идёт самый точный ответ первого геокодера. */
   fun byPosition(point: GeoPoint, onResult: (List<GeoAnswer>) -> Unit) =
-    request({ it.byPosition(point) }, onResult)
+    request({ it.byPosition(point) }, sorted = false, onResult)
 
-  fun byText(text: String, onResult: (List<GeoAnswer>) -> Unit) = request({ it.byText(text) }, onResult)
+  /** Ответы по алфавиту. */
+  fun byText(text: String, onResult: (List<GeoAnswer>) -> Unit) = request({ it.byText(text) }, sorted = true, onResult)
 
-  private fun request(query: (IGeoSearchEngine) -> List<GeoAnswer>, onResult: (List<GeoAnswer>) -> Unit) {
-    val registered = engines.toList()
+  private fun request(query: (IGeoSearchEngine) -> List<GeoAnswer>, sorted: Boolean, onResult: (List<GeoAnswer>) -> Unit) {
+    val registered = engines.filter { it.configured }
     if (registered.isEmpty()) {
+      Notify.error(R.string.geocoder_key_missing)
       main.post { onResult(emptyList()) }
       return
     }
@@ -51,11 +56,26 @@ object GeoSearchManager {
           main.post {
             answers[index] = result
             remaining--
-            if (remaining == 0) onResult(answers.flatMap { it.orEmpty() })
+            if (remaining == 0) onResult(merge(answers.map { it.orEmpty() }, sorted))
           }
         }
         if (engine.mustBeAsync) workers.execute(run) else run.run()
       }
     }
   }
+
+  /** Повтор - совпадение названия и описания без учёта регистра и лишних пробелов. Ответы без текста не сравниваются. FOR LOCAL USE */
+  private fun merge(lists: List<List<GeoAnswer>>, sorted: Boolean): List<GeoAnswer> {
+    val seen = HashSet<String>()
+    val unique = lists.flatten().filter { answer ->
+      val key = listOfNotNull(answer.name, answer.description)
+        .joinToString("\n") { it.trim().replace(SPACES, " ").lowercase() }
+      key.isBlank() || seen.add(key)
+    }
+    if (!sorted) return unique
+    val collator = Collator.getInstance()
+    return unique.sortedWith(compareBy(collator) { it.name ?: it.description ?: "" })
+  }
+
+  private val SPACES = Regex("\\s+")
 }

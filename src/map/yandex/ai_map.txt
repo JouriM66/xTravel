@@ -1,0 +1,25 @@
+русский текст для того чтобы редакторы не путали кодировку
+
+src\map\yandex\ - всё, что работает через Яндекс MapKit: подложка, маршруты, строки настроек.
+Геокодер Яндекса (HTTP, без MapKit) - в src\GeoCode\YandexSearch.kt.
+
+YandexMapEngine.kt - MapKit как пассивная подложка (MapType.YANDEX).
+  calibration через MapWindow.worldToScreen - единственный верный источник экранных позиций.
+  ensureReady: ключ из настроек, язык, инициализация. MapKit берёт ключ ОДИН РАЗ ЗА ПРОЦЕСС,
+    поэтому keyChanged при смене взятого ключа ставит restartNeeded. ensureReady зовут и карта, и маршруты.
+    Без ключа MapType.YANDEX.createEngine даёт null - Maps показывает встроенную карту.
+  Все вызовы MapKit обёрнуты Failures.guard(MAP).
+  openExternal (зовёт только касание логотипа), handleTap (касание логотипа открывает Яндекс Карты), licenseInfo,
+  setCamera, start, stop, release, Backdrop, settingsChanged.
+
+YandexSettings.kt
+  YandexSettings: строки редакторов настроек. MapRows - карта (ключ MapKit, 3D) и геокодер (ключ, число ответов),
+    RouteRows - ключ MapKit. Ключ MapKit один на карту и маршруты: MapKit берёт его один раз за процесс.
+
+YandexRoutes.kt - запрос маршрутов у Яндекса.
+  YandexRoutes: IRouteBuilder (route\RouteBuilders.kt), id "yandex" - значение Settings.routeBuilder по умолчанию.
+    request сам поднимает MapKit (ensureReady), карта Яндекса для маршрутов не нужна.
+  Движки: PedestrianRouter, BicycleRouterV2, MasstransitRouter (TransportFactory, все три
+    отвечают типами masstransit) и DrivingRouter (DirectionsFactory).
+  Манёвры и готовую длину пути дают ТОЛЬКО автомобильные ответы, у остальных длина
+    считается по линии. Особенности вызова MapKit - в memory.md.

@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.util.LruCache
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Box
@@ -21,13 +22,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntSize
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -68,6 +72,13 @@ object Pictures {
     while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= maxSide) sample *= 2
     val bitmap = BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
     return bitmap.asImageBitmap().also { cache.put(key, it) }
+  }
+
+  /** Размер картинки в файле по заголовку; null - не прочитан */
+  fun originalSize(file: File): IntSize? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(file.path, bounds)
+    return if (bounds.outWidth > 0 && bounds.outHeight > 0) IntSize(bounds.outWidth, bounds.outHeight) else null
   }
 
   private val aspects = HashMap<String, Float>()
@@ -158,38 +169,69 @@ fun SquareThumb(name: String, modifier: Modifier = Modifier, dir: File? = null) 
   }
 }
 
-// Full screen view with zoom; moved by a finger only when zoomed, otherwise the swipe goes to the pager around it.
-/**
-* Displays a fit-to-screen image with pinch zoom from 1x to 8x and panning while zoomed.
-*
-* Usage: At 1x, horizontal gestures remain available to an enclosing pager.
-* @param name Image basename resolved in dir or AppDirs.images.
-* @param dir Image directory override; null resolves the filename in AppDirs.images.
-* @return Unit; emits the full-size viewer.
+/** FOR LOCAL USE: картинка в просмотре и размер её файла; original null - размер не прочитан */
+private class ViewedPicture(val image: ImageBitmap, val original: IntSize?)
+
+/** Просмотр во всю отведённую область, картинка за её пределы не рисуется. Наименьший масштаб - картинка вмещена,
+    наибольший - 1:1 к пикселям файла (не меньше вмещённого). Сдвиг только в увеличенном виде и не дальше краёв картинки,
+    без увеличения свайп уходит листающему пейджеру. Двойное касание: из вмещённого вида - 1:1 вокруг места касания,
+    из любого другого - вмещённый.
 */
 @Composable
 fun PictureViewer(name: String, dir: File? = null) {
-  BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
+  BoxWithConstraints(Modifier.fillMaxSize().clipToBounds().background(Color.Black), contentAlignment = Alignment.Center) {
     val maxSide = with(LocalDensity.current) { maxOf(maxWidth, maxHeight).roundToPx() * 2 }
-    val image by produceState<ImageBitmap?>(null, name) {
-      value = withContext(Dispatchers.IO) { Pictures.decode(pictureOf(name, dir), maxSide) }
+    val viewed by produceState<ViewedPicture?>(null, name) {
+      value = withContext(Dispatchers.IO) {
+        val file = pictureOf(name, dir)
+        Pictures.decode(file, maxSide)?.let { ViewedPicture(it, Pictures.originalSize(file)) }
+      }
     }
+    val picture = viewed ?: return@BoxWithConstraints
+    val boxWidth = constraints.maxWidth.toFloat()
+    val boxHeight = constraints.maxHeight.toFloat()
+    val image = picture.image
+    // Размер вмещённой картинки на экране.
+    val ratio = image.width.toFloat() / image.height
+    val fitWidth = minOf(boxWidth, boxHeight * ratio)
+    val fitHeight = fitWidth / ratio
+    val maxScale = maxOf(1f, (picture.original?.width ?: image.width) / fitWidth)
+
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
-    val state = rememberTransformableState { _, zoom, pan, _ ->
-      scale = (scale * zoom).coerceIn(1f, 8f)
-      offset = if (scale == 1f) Offset.Zero else offset + pan
+    fun limited(value: Offset, at: Float): Offset {
+      val x = maxOf(0f, (fitWidth * at - boxWidth) / 2)
+      val y = maxOf(0f, (fitHeight * at - boxHeight) / 2)
+      return Offset(value.x.coerceIn(-x, x), value.y.coerceIn(-y, y))
     }
-    image?.let {
-      Image(
-        it,
-        contentDescription = null,
-        modifier = Modifier
-          .fillMaxSize()
-          .transformable(state, canPan = { scale > 1f })
-          .graphicsLayer(scaleX = scale, scaleY = scale, translationX = offset.x, translationY = offset.y),
-        contentScale = ContentScale.Fit
-      )
+    // Масштаб меняется вокруг точки между пальцами.
+    val state = rememberTransformableState { centroid, zoom, pan, _ ->
+      val newScale = (scale * zoom).coerceIn(1f, maxScale)
+      val fromCenter = centroid - Offset(boxWidth / 2, boxHeight / 2)
+      offset = limited(fromCenter - (fromCenter - offset) * (newScale / scale) + pan, newScale)
+      scale = newScale
     }
+    Image(
+      image,
+      contentDescription = null,
+      modifier = Modifier
+        .fillMaxSize()
+        .pointerInput(maxScale, boxWidth, boxHeight) {
+          detectTapGestures(onDoubleTap = { tap ->
+            if (scale > 1f) {
+              scale = 1f
+              offset = Offset.Zero
+            } else {
+              // Место касания остаётся под пальцем.
+              val fromCenter = tap - Offset(boxWidth / 2, boxHeight / 2)
+              scale = maxScale
+              offset = limited(fromCenter * (1 - maxScale), maxScale)
+            }
+          })
+        }
+        .transformable(state, canPan = { scale > 1f })
+        .graphicsLayer(scaleX = scale, scaleY = scale, translationX = offset.x, translationY = offset.y),
+      contentScale = ContentScale.Fit
+    )
   }
 }

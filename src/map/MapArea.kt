@@ -47,12 +47,7 @@ private const val STOP_FLING_VELOCITY_DP = 20f
 private const val FLING_FRICTION = 4f
 private const val ZOOM_ANIMATION_MS = 250f
 
-// Map background of the current engine, application modules above it and the common gesture handling.
-/**
-* Combines the map background, custom layers, gesture handling and map popup host.
-* @param modifier Compose layout and drawing modifier applied to the emitted host. Default: Modifier.
-* @return Unit; emits the interactive map area.
-*/
+/** Подложка текущего движка, слои приложения над ней, общий обработчик жестов и меню места. */
 @Composable
 fun MapArea(modifier: Modifier = Modifier) {
   val density = LocalDensity.current.density
@@ -68,7 +63,7 @@ fun MapArea(modifier: Modifier = Modifier) {
     hoursMinutes = stringResource(R.string.time_h_m),
     daysHours = stringResource(R.string.time_d_h)
   )
-  // Icons of the points are turned into painters here: the layer draws them outside composition.
+  // Иконки точек превращаются в painter здесь: слой рисует их вне композиции.
   PointIcons.Prepare()
   Box(modifier.clipToBounds()) {
     val engine = Maps.engine
@@ -84,24 +79,11 @@ fun MapArea(modifier: Modifier = Modifier) {
   }
 }
 
-// Tap on the map: closes the open sheet; otherwise an own object gets selected(), or the place menu is shown.
-/**
-* Routes map taps to drawn objects, map-provider actions or the empty-place menu.
-*
-* Public and subclass/module-facing members:
-* - [onTap] - Dispatches a tap to selectable overlays, a map-provider action or a menu for an empty place.
-* - [showPlace] - Shows the menu of a place given by its coordinates, moving the map to it when it is outside the view.
-*/
+/** Касание карты: своему объекту (selected), движку (например, логотип) или меню пустого места. */
 object MapTap {
-  /**
-  * Dispatches a tap to selectable overlays, a map-provider action or a menu for an empty place.
-  * @param screen Position in the map viewport's screen coordinates, in pixels.
-  * @param viewport Coordinate converter for the current camera and canvas.
-  * @return Unit; the bottom sheet is left as it is.
-  */
   fun onTap(screen: Offset, viewport: MapViewport) {
     if (PointMoveMode.activeId != null) return
-    // The sheet stays open while the map is touched; it closes with the hardware back button.
+    // Шторка при касании карты остаётся открытой, закрывается кнопкой "назад".
     if (FloatingBar.isOpen) {
       FloatingBar.cancel()
       return
@@ -116,12 +98,8 @@ object MapTap {
     showPlace(viewport.toGeo(screen), viewport)
   }
 
-  // The place of the menu chosen by hand: the map is moved to it only when it is off the screen.
-  /**
-  * Shows the menu of a place given by its coordinates, moving the map to it when it is outside the view.
-  * @param place Geographic place the menu is about.
-  * @param viewport Coordinate converter of the current frame; the last drawn one is used when it is not supplied. Default: null.
-  * @return Unit; nothing happens before the first drawn frame.
+  /** Меню места по координатам; место вне видимой области - карта переходит в ручной режим и центруется на нём.
+      viewport null - берётся последний нарисованный кадр; до первого кадра ничего не делает.
   */
   fun showPlace(place: GeoPoint, viewport: MapViewport? = null) {
     val view = viewport ?: Maps.lastViewport ?: return
@@ -265,8 +243,9 @@ private class MapGestures(private val scope: CoroutineScope) {
     }
   }
 
-  // Zoom and rotation always go around the center of the screen, so the place shown stays where it is and the position
-  // mode survives them; only a one-finger drag moves the map. Maps checks that drag when UserActivity resumes.
+  /** Масштаб и поворот - всегда вокруг центра экрана: показанное место остаётся на месте и режим расположения их переживает.
+      Карту двигает только сдвиг одним пальцем; его Maps проверяет при UserActivity.resume.
+  */
   private fun transform(
     width: Float, height: Float, density: Float,
     pan: Offset, zoomFactor: Float, rotation: Float, panGesture: Boolean

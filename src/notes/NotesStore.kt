@@ -50,7 +50,7 @@ object NotesData : IDataOwner {
     xml.endTag(null, tag)
   }
 
-  override fun read(parser: XmlPullParser, dir: File, result: LoadedData) {
+  override fun read(parser: XmlPullParser, dir: File?, result: LoadedData) {
     val elements = mutableListOf<PointElement>()
     parser.forEachChild { name -> PointXml.readElement(parser, name, elements) }
     result.notes = MetaInfo(elements)

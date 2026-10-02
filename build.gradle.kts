@@ -51,8 +51,13 @@ android {
         kotlin.directories.apply { clear(); add("src") }
         java.directories.apply { clear(); add("src") }
         res.directories.apply { clear(); addAll(listOf("res/app", "res/ext")) }
-        assets.directories.clear()
+        assets.directories.apply { clear(); add("res/assets") }
         jniLibs.directories.clear()
+    }
+
+    // Встроенная карта читается прямо из пакета с произвольным доступом (AssetFileDescriptor), поэтому без сжатия.
+    androidResources {
+        noCompress += "pmtiles"
     }
 
     defaultConfig {

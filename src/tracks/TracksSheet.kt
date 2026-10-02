@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -32,6 +33,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -41,7 +43,9 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,12 +55,19 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlin.math.roundToInt
 
 private val DATE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+private const val RELOAD_MS = 2000L /** Как часто карточка перечитывает файл растущей записи */
+private const val MAX_ISSUE_ROWS = 200 /** Больше строк ошибок карточка не выводит */
 
 // Current track first, then the saved ones. A tap gives the menu of the track, a long press opens the selection editor.
 /**
@@ -104,13 +115,13 @@ private class TrackSelectionEditor(first: String?, private val firstIndex: Int, 
 }
 
 /** Касание трека на карте в режиме выбора: список прокручивается к нему, его выбор переключается; касание текущего
-    трека (null) в этом режиме ничего не делает. Возвращает false, если режим выбора не открыт.
+    трека (id null) в этом режиме ничего не делает. Возвращает false, если режим выбора не открыт.
 */
-fun toggleSelectedTrack(name: String?): Boolean {
+fun toggleSelectedTrack(id: String?): Boolean {
   val editor = BottomSheet.topEditor as? TrackSelectionEditor ?: return false
-  if (name == null) return true
-  if (name in editor.selection) editor.selection.remove(name) else editor.selection.add(name)
-  editor.jump.value = name
+  if (id == null) return true
+  if (id in editor.selection) editor.selection.remove(id) else editor.selection.add(id)
+  editor.jump.value = id
   return true
 }
 
@@ -128,7 +139,7 @@ private fun TrackList(selection: SnapshotStateList<String>?, listState: LazyList
   }
   LaunchedEffect(target, tracks.size) {
     if (target == null || selection != null) return@LaunchedEffect
-    val index = tracks.indexOfFirst { it.name == target }
+    val index = tracks.indexOfFirst { it.id == target }
     if (index >= 0) {
       listState.animateScrollToItem(index + 1)
       TrackStorage.scrollTarget = null
@@ -136,14 +147,14 @@ private fun TrackList(selection: SnapshotStateList<String>?, listState: LazyList
   }
   val jumpTarget = jump?.value
   LaunchedEffect(jumpTarget) {
-    val index = tracks.indexOfFirst { it.name == jumpTarget }
+    val index = tracks.indexOfFirst { it.id == jumpTarget }
     if (index >= 0) listState.animateScrollToItem(index + 1)
     jump?.value = null
   }
   LaunchedEffect(tracks.size) {
     if (selection == null) return@LaunchedEffect
-    val names = tracks.map { it.name }.toSet()
-    selection.retainAll { it in names }
+    val ids = tracks.map { it.id }.toSet()
+    selection.retainAll { it in ids }
   }
 
   LazyColumn(state = listState, modifier = Modifier.fillMaxSize().scrollIndicator(listState)) {
@@ -153,9 +164,9 @@ private fun TrackList(selection: SnapshotStateList<String>?, listState: LazyList
       }
       HorizontalDivider()
     }
-    items(tracks, key = { it.name }) { header ->
+    items(tracks, key = { it.id }) { header ->
       TrackRow(header, selection) {
-        BottomSheet.push(TrackSelectionEditor(header.name, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset))
+        BottomSheet.push(TrackSelectionEditor(header.id, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset))
       }
       HorizontalDivider()
     }
@@ -166,12 +177,12 @@ private fun TrackList(selection: SnapshotStateList<String>?, listState: LazyList
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun TrackRow(header: TrackHeader, selection: SnapshotStateList<String>?, onLongClick: () -> Unit) {
-  val selected = selection != null && header.name in selection
+  val selected = selection != null && header.id in selection
   val highlighted = selection == null && header.highlighted
   var menu by remember { mutableStateOf(false) }
   val toggle: () -> Unit = {
     if (selection != null) {
-      if (header.name in selection) selection.remove(header.name) else selection.add(header.name)
+      if (header.id in selection) selection.remove(header.id) else selection.add(header.id)
     }
   }
   SwipeRevealRow(enabled = selection == null, onDelete = { TrackActions.delete(listOf(header)) {} }) {
@@ -206,35 +217,29 @@ private fun TrackRow(header: TrackHeader, selection: SnapshotStateList<String>?,
   }
 }
 
-// Menu of a track tapped on the map: to the list and the places of the track, sharing as a submenu. A name of null is the
-// track being recorded now, it has no row of its own to mark.
-/**
-* Displays actions for a saved track or the current recording, including export-format selection.
-* @param name Saved-track filename stem, or null to show actions for the active recording.
-* @param close Callback closing the owning popup before a selected action proceeds.
-* @receiver Menu column scope in which rows are emitted.
-* @return Unit; emits menu content in the receiver ColumnScope.
+/** Меню трека, тронутого на карте: к списку, к местам трека, "поделиться" подменю. id null - текущая запись,
+    своей строки для подсветки у неё нет.
 */
 @Composable
-fun ColumnScope.TrackMapMenu(name: String?, close: () -> Unit) {
+fun ColumnScope.TrackMapMenu(id: String?, close: () -> Unit) {
   var share by remember { mutableStateOf(false) }
-  val header = if (name == null) TrackRecorder.current else TrackStorage.find(name)
-  val set = trackSet(header, name == null)
+  val header = if (id == null) TrackRecorder.current else TrackStorage.find(id)
+  val set = trackSet(header, id == null)
   if (share) return PopupShareMenu(set, close)
   MenuItem(Icons.AutoMirrored.Outlined.List, stringResource(R.string.to_list)) {
     close()
-    name?.let(TrackStorage::focus)
+    id?.let(TrackStorage::focus)
     BottomSheet.open("tracks", TracksListEditor())
   }
   MenuItem(Icons.Outlined.Info, stringResource(R.string.properties), enabled = header != null) {
     close()
-    BottomSheet.push(TrackPropertiesEditor(name))
+    BottomSheet.push(TrackPropertiesEditor(id))
   }
   MenuItem(Icons.Outlined.Flag, stringResource(R.string.go_to_start), enabled = header != null) {
     close()
     header?.let(TrackActions::goToStart)
   }
-  MenuItem(Icons.Outlined.SportsScore, stringResource(R.string.go_to_end), enabled = header != null && header.complete) {
+  MenuItem(Icons.Outlined.SportsScore, stringResource(R.string.go_to_end), enabled = header != null) {
     close()
     header?.let(TrackActions::goToEnd)
   }
@@ -253,7 +258,7 @@ private fun ColumnScope.TrackMenu(header: TrackHeader, close: () -> Unit) {
   if (share) return PopupShareMenu(set, close)
   MenuItem(Icons.Outlined.Info, stringResource(R.string.properties)) {
     close()
-    BottomSheet.push(TrackPropertiesEditor(header.name))
+    BottomSheet.push(TrackPropertiesEditor(header.id))
   }
   MenuItem(Icons.Outlined.Edit, stringResource(R.string.rename)) {
     close()
@@ -263,7 +268,7 @@ private fun ColumnScope.TrackMenu(header: TrackHeader, close: () -> Unit) {
     close()
     TrackActions.goToStart(header)
   }
-  MenuItem(Icons.Outlined.SportsScore, stringResource(R.string.go_to_end), enabled = header.complete) {
+  MenuItem(Icons.Outlined.SportsScore, stringResource(R.string.go_to_end)) {
     close()
     TrackActions.goToEnd(header)
   }
@@ -305,8 +310,7 @@ private fun ColumnScope.CurrentTrackMenu(close: () -> Unit) {
   }
 }
 
-// Number of points; unknown for an unfinished track whose data is not loaded.
-private fun pointsText(header: TrackHeader) = if (header.complete) formatCount(header.points) else "—"
+private fun pointsText(header: TrackHeader) = formatCount(header.points)
 
 /**
 * Implements user-facing track navigation, renaming, deletion and export actions.
@@ -338,7 +342,7 @@ object TrackActions {
   /**
   * Opens a name editor and renames a saved track after validation.
   * @param header Track metadata used by the requested operation.
-  * @param onRenamed Receives the accepted new track filename stem.
+  * @param onRenamed Receives the accepted new track name.
   * @return Unit; successful renaming invokes onRenamed.
   */
   fun rename(header: TrackHeader, onRenamed: (String) -> Unit) {
@@ -368,7 +372,6 @@ object TrackActions {
     }
   }
 
-  // Only the known numbers of points are counted.
   /**
   * Asks for confirmation with selected track and sample counts, then queues deletion.
   * @param headers Track metadata records selected for the operation.
@@ -377,7 +380,7 @@ object TrackActions {
   */
   fun delete(headers: List<TrackHeader>, onDeleted: () -> Unit) {
     if (headers.isEmpty()) return
-    val points = headers.filter { it.complete }.sumOf { it.points }
+    val points = headers.sumOf { it.points }
     confirmDelete(headers.singleOrNull()?.name, headers.size, points) {
       TrackStorage.delete(headers)
       onDeleted()
@@ -501,11 +504,10 @@ private fun showMergeDialog(selected: List<TrackHeader>, onDone: () -> Unit) {
 }
 
 // Name and everything kept about the track; the toolbar has the actions of the track menu. Deleting the track closes the editor.
-// name null: the current track, its values come from memory.
-private class TrackPropertiesEditor(name: String?) : SheetEditor() {
+// id null: the current track, its values come from memory.
+private class TrackPropertiesEditor(private val id: String?) : SheetEditor() {
 
-  private var name by mutableStateOf(name)
-  private val isCurrent = name == null
+  private val isCurrent = id == null
 
   override val caption: String get() = AppSession.context.getString(R.string.sheet_track_properties)
 
@@ -522,17 +524,17 @@ private class TrackPropertiesEditor(name: String?) : SheetEditor() {
       ToolbarItem(Icons.Outlined.Delete, R.string.delete, enabled = header != null) { TrackActions.deleteCurrent { BottomSheet.back() } }
       return
     }
-    val header = name?.let(TrackStorage::find) ?: return
-    ToolbarItem(Icons.Outlined.Edit, R.string.rename) { TrackActions.rename(header) { name = it } }
+    val header = id?.let(TrackStorage::find) ?: return
+    ToolbarItem(Icons.Outlined.Edit, R.string.rename) { TrackActions.rename(header) {} }
     ToolbarItem(Icons.Outlined.Flag, R.string.go_to_start) { TrackActions.goToStart(header) }
-    ToolbarItem(Icons.Outlined.SportsScore, R.string.go_to_end, enabled = header.complete) { if (header.complete) TrackActions.goToEnd(header) }
+    ToolbarItem(Icons.Outlined.SportsScore, R.string.go_to_end) { TrackActions.goToEnd(header) }
     ShareToolbarItem { trackSet(header, current = false) }
     ToolbarItem(Icons.Outlined.Delete, R.string.delete) { TrackActions.delete(listOf(header)) { BottomSheet.back() } }
   }
 
   @Composable
   override fun Content() {
-    val header = if (isCurrent) TrackRecorder.current else name?.let(TrackStorage::find) ?: return
+    val header = if (isCurrent) TrackRecorder.current else id?.let(TrackStorage::find) ?: return
     val tableWidth = remember { mutableStateOf(0.dp) }
 
     val scroll = rememberScrollState()
@@ -541,34 +543,87 @@ private class TrackPropertiesEditor(name: String?) : SheetEditor() {
       Text(if (isCurrent) TrackRecorder.name ?: "—" else header?.name.orEmpty(), style = MaterialTheme.typography.headlineSmall)
 
       if (header == null) {
-        AlignedProperty(R.string.track_points, "0", tableWidth)
+        AlignedProperty(R.string.track_info, "0", tableWidth)
         return@Column
       }
-      val known = header.complete || isCurrent
-
-      if ( header.points > 0 )
-       AlignedProperty( R.string.track_points, header.points.toString(), tableWidth )
-
-      if ( known )
-        AlignedProperty(
-          R.string.track_duration,
-          formatDuration(header.end - header.start),
-          tableWidth )
-
+      val data = rememberTrackData(header)
+      val info = listOfNotNull(
+        header.points.toString(),
+        formatDuration(header.end - header.start),
+        data?.let { distanceText(it.length) }
+      )
+      val climb = data?.let { "\n" + stringResource(R.string.track_climb, it.ascent.roundToInt(), it.descent.roundToInt()) }.orEmpty()
+      AlignedProperty(R.string.track_info, info.joinToString(", ") + climb, tableWidth)
       AlignedProperty(
         R.string.track_start,
         "${formatTime(header.start)}\n${formatCoordinates(GeoPoint(header.startLat, header.startLon))}",
         tableWidth )
-      if ( known ) {
-        AlignedProperty(
-          R.string.track_end,
-          "${formatTime(header.end)}\n${formatCoordinates(GeoPoint(header.endLat, header.endLon))}",
-          tableWidth )
-        AlignedProperty(
-          R.string.track_area,
-          "${formatCoordinates(GeoPoint(header.minLat, header.minLon))}\n${formatCoordinates(GeoPoint(header.maxLat, header.maxLon))}",
-          tableWidth )
+      AlignedProperty(
+        R.string.track_end,
+        "${formatTime(header.end)}\n${formatCoordinates(GeoPoint(header.endLat, header.endLon))}",
+        tableWidth )
+      if (data != null) {
+        ElevationChart(data)
+        TrackIssues(data, header)
       }
+    }
+  }
+
+  /** Точки трека из файла; перечитываются при изменении сводки, у текущей записи не чаще RELOAD_MS. null - ещё не прочитаны */
+  @Composable
+  private fun rememberTrackData(header: TrackHeader): TrackData? {
+    var data by remember { mutableStateOf<TrackData?>(null) }
+    val latest by rememberUpdatedState(header)
+    LaunchedEffect(Unit) {
+      snapshotFlow { latest }.conflate().collect { current ->
+        data = if (current.id.isEmpty()) TrackData.EMPTY else withContext(Dispatchers.IO) { TrackAnalysis.read(current.id) }
+        delay(RELOAD_MS)
+      }
+    }
+    return data
+  }
+
+  private fun removePoints(header: TrackHeader, rows: Map<Int, String>) {
+    if (isCurrent) TrackRecorder.removePoints(rows) else TrackStorage.removePoints(header, rows)
+  }
+
+  @Composable
+  private fun TrackIssues(data: TrackData, header: TrackHeader) {
+    if (data.issues.isEmpty()) return
+    FramedGroup {
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(stringResource(R.string.track_issues, data.issues.size), Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+        IconButton(onClick = {
+          AppDialog.confirm(R.string.track_points_delete, data.issues.size, icon = Icons.Outlined.Delete,
+            confirmIcon = Icons.Outlined.Delete, confirmLabel = R.string.delete) {
+            removePoints(header, data.issues.associate { it.index to data.samples[it.index].row })
+          }
+        }) {
+          Icon(Icons.Outlined.DeleteSweep, contentDescription = stringResource(R.string.delete), tint = DELETE_ICON_COLOR)
+        }
+      }
+      data.issues.take(MAX_ISSUE_ROWS).forEach { issue ->
+        val sample = data.samples[issue.index]
+        val number = issue.index + 1
+        Row(
+          Modifier.fillMaxWidth().clickable { Maps.centerOn(GeoPoint(sample.lat, sample.lon)) },
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Text(
+            "$number: " + issue.reasons.map { stringResource(it.text) }.joinToString(", "),
+            Modifier.weight(1f)
+          )
+          IconButton(onClick = {
+            AppDialog.confirm(R.string.track_point_delete, number, icon = Icons.Outlined.Delete, confirmIcon = Icons.Outlined.Delete,
+              confirmLabel = R.string.delete) {
+              removePoints(header, mapOf(issue.index to sample.row))
+            }
+          }) {
+            Icon(Icons.Outlined.Delete, contentDescription = stringResource(R.string.delete), tint = DELETE_ICON_COLOR)
+          }
+        }
+      }
+      if (data.issues.size > MAX_ISSUE_ROWS) Text(stringResource(R.string.track_issues_more, data.issues.size - MAX_ISSUE_ROWS))
     }
   }
 

@@ -1,27 +1,26 @@
 // русский текст для того чтобы редакторы не путали кодировку
 package com.jm.xtravel
 
-import android.content.Context
-import android.content.Intent
-import android.net.Uri
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.provider.OpenableColumns
 import android.util.Log
 import android.util.Xml
 import org.xmlpull.v1.XmlPullParser
 import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.util.concurrent.CancellationException
+import java.util.concurrent.CompletableFuture
+import java.util.zip.Deflater
 import java.util.zip.ZipEntry
-import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
 // Data directory: data.xml with a section per data type, next to it the files of the types (images/, tracks/).
 // The application keeps its data in such a directory; the exchange file is the same directory packed into a zip.
 
-const val DATA_VERSION = 2 /** Актуальная версия формата каталога данных; пишется в data.xml и задаёт устройство всего каталога */
+const val DATA_VERSION = 3 /** Актуальная версия формата каталога данных; пишется в data.xml и задаёт устройство всего каталога */
 
 /** Файл версии в корне каталога данных и архива: одна строка с номером DATA_VERSION. Его прочтёт загрузчик любой версии,
     даже если остальной каталог ему непонятен; та же версия пишется атрибутом в data.xml.
@@ -37,11 +36,14 @@ interface IDataFormatImporter {
   fun upgrade(dir: File): Boolean
 }
 
-/** Версия 1: записки точкой внутри notes и старая запись автопосещения. Не поддерживается. */
-object DataFormat1Importer : IDataFormatImporter {
-  override val version = 1
+/** Ход записи архива обмена: start - общий объём файлов в байтах, advance - сколько уже записано.
+    Зовутся из потока записи; cancelled прерывает запись.
+*/
+interface IExportProgress {
+  val cancelled: Boolean
 
-  override fun upgrade(dir: File) = false
+  fun start(total: Long)
+  fun advance(done: Long)
 }
 
 class UnsupportedDataFormat(val version: String) : Exception("Data format $version is not supported") /** Версия каталога не читается */
@@ -95,7 +97,8 @@ class DataSet(
   val tracks: List<TrackHeader> = emptyList(),
   val notes: MetaInfo? = null, // null - записок в наборе нет
   val nextId: Long = 0L,
-  val globals: GlobalValues? = null
+  val globals: GlobalValues? = null,
+  val active: TrackHeader? = null // активная запись трека; есть только в полном сохранении
 )
 
 // What a read directory holds; file references are relative to dir.
@@ -109,10 +112,10 @@ class DataSet(
 * - [notes] - Imported notes, or null when the source has no notes section.
 * - [nextId] - Next object ID read from the source; PointStore also checks imported IDs before assigning new ones.
 * - [globals] - Global state read from the source, or null when it has no global section.
-* @param dir Directory from which referenced files are read or into which files are written.
-* @property dir Directory from which referenced files are read or into which files are written.
+* @param dir Directory from which referenced files are read; null - the files are inside an import source, not on disk.
+* @property dir Directory from which referenced files are read; null - the files are inside an import source, not on disk.
 */
-class LoadedData(val dir: File) {
+class LoadedData(val dir: File?) {
   /**
   * Mutable point records collected by registered readers.
   * @return Mutable point records collected by registered readers.
@@ -139,6 +142,9 @@ class LoadedData(val dir: File) {
   * @return Global state read from the source, or null when it has no global section.
   */
   var globals: GlobalValues? = null
+  var active: TrackHeader? = null /** Активная запись трека источника */
+  var fromGpx = false /** Данные из GPX: треки всегда добавляются, дубли не ищутся */
+  val rescan = mutableSetOf<String>() /** id треков без полной сводки: она строится по файлу трека после его распаковки */
 }
 
 // Selections with everything the chosen objects depend on. Main thread.
@@ -165,7 +171,8 @@ object DataSelectors {
     TrackStorage.tracks.toList(),
     NotesStore.notes,
     PointStore.nextId,
-    GlobalValues(TrackRecorder.visible)
+    GlobalValues(TrackRecorder.visible),
+    TrackRecorder.current?.takeIf { TrackRecorder.hasFile }
   )
 
   /**
@@ -205,9 +212,13 @@ object DataSelectors {
 * - [write] - Writes registered data sections to a temporary UTF-8 XML file and replaces data.xml after serialization.
 * - [read] - Loads known XML sections from a data directory, skipping unknown sections.
 * - [place] - Copies an existing source file to a target, creating parent directories and overwriting the target.
-* - [createExportFile] - Writes a selection into a temporary directory and packs it as a native exchange archive.
+* - [createExportFile] - Набор архивом обмена в AppDirs.share, без промежуточных копий.
+* - [writeExport] - Набор в формате обмена прямо в поток, без архива и копий файлов на диске.
 */
 object DataIO {
+
+  /** Пока задан, place не копирует файл, а запоминает пару "куда - откуда"; так writeExport собирает файлы данных */
+  private val linked = ThreadLocal<MutableMap<File, File>?>()
 
   /**
   * Resolves the images subdirectory of a data directory without creating it.
@@ -221,6 +232,9 @@ object DataIO {
   * @return The tracks directory path.
   */
   fun tracksDir(dir: File) = File(dir, "tracks")
+
+  fun picturePath(name: String) = "images/$name" /** Путь картинки внутри каталога данных и архива обмена */
+  fun trackPath(id: String) = "tracks/$id.$TRACK_DATA_EXT" /** Путь файла трека внутри каталога данных и архива обмена */
 
   // data.xml is replaced through a temporary file.
   /**
@@ -267,15 +281,18 @@ object DataIO {
       DataFormats.upgrade(dir, version)
       if (version(dir) != DATA_VERSION.toString()) throw UnsupportedDataFormat(version)
     }
+    return file.inputStream().use { parse(it, dir) }
+  }
+
+  /** Секции data.xml из потока; dir - каталог файлов данных, null - файлы в источнике импорта (см. LoadedData) */
+  fun parse(input: InputStream, dir: File?): LoadedData {
     val result = LoadedData(dir)
-    file.inputStream().use { input ->
-      val parser = Xml.newPullParser()
-      parser.setInput(input, "UTF-8")
-      while (parser.next() != XmlPullParser.END_DOCUMENT) {
-        if (parser.eventType != XmlPullParser.START_TAG || parser.depth != 1) continue
-        parser.forEachChild { tag ->
-          DataOwnerManager.readSection(tag, parser, dir, result)
-        }
+    val parser = Xml.newPullParser()
+    parser.setInput(input, "UTF-8")
+    while (parser.next() != XmlPullParser.END_DOCUMENT) {
+      if (parser.eventType != XmlPullParser.START_TAG || parser.depth != 1) continue
+      parser.forEachChild { tag ->
+        DataOwnerManager.readSection(tag, parser, dir, result)
       }
     }
     return result
@@ -285,16 +302,17 @@ object DataIO {
   private fun version(dir: File): String {
     val text = File(dir, VERSION_FILE)
     if (text.isFile) return text.readText().trim()
-    return xmlVersion(File(dir, DATA_FILE))
+    return File(dir, DATA_FILE).inputStream().use(::xmlVersion)
   }
 
-  private fun xmlVersion(file: File): String = file.inputStream().use { input ->
+  /** Версия из корневого тега data.xml; пустая строка - версии нет */
+  fun xmlVersion(input: InputStream): String {
     val parser = Xml.newPullParser()
     parser.setInput(input, "UTF-8")
     while (parser.next() != XmlPullParser.END_DOCUMENT) {
-      if (parser.eventType == XmlPullParser.START_TAG) return@use parser.attr("version").orEmpty()
+      if (parser.eventType == XmlPullParser.START_TAG) return parser.attr("version").orEmpty()
     }
-    ""
+    return ""
   }
 
   /**
@@ -305,37 +323,102 @@ object DataIO {
   */
   fun place(source: File, target: File) {
     if (!source.isFile || source.canonicalPath == target.canonicalPath) return
+    // Каталог нужен и без копирования: рядом владелец секции пишет свои служебные файлы.
     target.parentFile?.mkdirs()
+    linked.get()?.let { links ->
+      links[target] = source
+      return
+    }
     source.copyTo(target, overwrite = true)
   }
 
-  // Packs the set into <name>.xtravel.zip in the share directory. Runs on the "io" thread.
-  /**
-  * Writes a selection into a temporary directory and packs it as a native exchange archive.
-  *
-  * Usage: Run on the serialized IO executor because exports share a temporary directory; temporary data is removed in finally.
-  * @param set Snapshot of selected application data to serialize or export.
-  * @param name Archive filename stem under AppDirs.share; callers must provide a safe name.
-  * @return The created archive in AppDirs.share.
+  /** Набор архивом обмена <name>.xtravel.zip в AppDirs.share, без промежуточных копий файлов.
+      Звать не из потока "io" (см. writeExport). При сбое или отмене недописанный архив удаляется.
   */
-  fun createExportFile(set: DataSet, name: String): File {
-    val dir = File(AppDirs.share, "export")
+  fun createExportFile(set: DataSet, name: String, progress: IExportProgress? = null): File {
+    val zip = File(AppDirs.share, "$name.$EXCHANGE_EXT")
     try {
-      dir.deleteRecursively()
-      write(set, dir)
-      val zip = File(AppDirs.share, "$name.$EXCHANGE_EXT")
-      ZipOutputStream(zip.outputStream().buffered()).use { out ->
-        dir.walkTopDown().filter { it.isFile }.forEach { file ->
-          out.putNextEntry(ZipEntry(file.relativeTo(dir).invariantSeparatorsPath))
-          file.inputStream().use { it.copyTo(out) }
-          out.closeEntry()
+      zip.outputStream().use { writeExport(set, it, progress) }
+      return zip
+    } catch (e: Throwable) {
+      zip.delete()
+      throw e
+    }
+  }
+
+  /** Набор в формате обмена прямо в поток out: во временный каталог пишутся только data.xml и служебные файлы,
+      файлы данных читаются с места. Звать не из потока "io": запись секций ставится в него и ожидается.
+      Поток out не закрывается. onReady зовётся перед первым байтом архива, когда подготовка уже удалась.
+      Отмена через progress - CancellationException.
+  */
+  fun writeExport(set: DataSet, out: OutputStream, progress: IExportProgress? = null, onReady: () -> Unit = {}) {
+    val dir = File(AppDirs.share, "stream-${System.nanoTime()}")
+    try {
+      val written = CompletableFuture<Map<File, File>>()
+      TrackStorage.io.execute {
+        val links = mutableMapOf<File, File>()
+        linked.set(links)
+        try {
+          write(set, dir)
+          written.complete(links)
+        } catch (error: Throwable) {
+          written.completeExceptionally(error)
+        } finally {
+          linked.remove()
         }
       }
-      return zip
+      val entries = written.get().filterValues { it.isFile }.toList() + dir.walkTopDown().filter { it.isFile }.map { it to it }.toList()
+      if (progress?.cancelled == true) throw CancellationException()
+      onReady()
+      // version.txt и data.xml - первыми: импорт читает только их, не проходя весь архив.
+      val first = listOf(File(dir, VERSION_FILE), File(dir, DATA_FILE))
+      zipFiles(entries.sortedBy { first.indexOf(it.first).let { index -> if (index < 0) first.size else index } }.map { it.first.relativeTo(dir).invariantSeparatorsPath to it.second }, out, progress)
     } finally {
       dir.deleteRecursively()
     }
   }
+
+  /** Файлы и каталоги entries из dir в zip как есть, пути от dir. Поток out не закрывается; отмена - CancellationException */
+  fun zipDirectory(dir: File, entries: List<File>, out: OutputStream, progress: IExportProgress? = null) {
+    val files = entries.flatMap { entry -> entry.walkTopDown().filter { it.isFile }.toList() }
+    zipFiles(files.map { it.relativeTo(dir).invariantSeparatorsPath to it }, out, progress)
+  }
+
+  /** Файлы в zip под заданными путями; уже сжатые форматы без сжатия */
+  private fun zipFiles(files: List<Pair<String, File>>, out: OutputStream, progress: IExportProgress?) {
+    progress?.start(files.sumOf { it.second.length() })
+    val buffered = out.buffered(EXPORT_BUFFER)
+    val zip = ZipOutputStream(buffered)
+    val buffer = ByteArray(EXPORT_BUFFER)
+    var done = 0L
+    files.forEach { (path, source) ->
+      val packed = source.extension.lowercase() in PACKED_EXTENSIONS
+      zip.setLevel(if (packed) Deflater.NO_COMPRESSION else Deflater.DEFAULT_COMPRESSION)
+      zip.putNextEntry(ZipEntry(path))
+      source.inputStream().use { input ->
+        while (true) {
+          val read = input.read(buffer)
+          if (read < 0) break
+          zip.write(buffer, 0, read)
+          done += read
+          if (progress != null) {
+            if (progress.cancelled) throw CancellationException()
+            progress.advance(done)
+          }
+        }
+      }
+      zip.closeEntry()
+    }
+    zip.finish()
+    buffered.flush()
+  }
+
+  private const val EXPORT_BUFFER = 64 * 1024
+
+  /** FOR LOCAL USE
+      Расширения уже сжатых файлов: в архив кладутся без сжатия, оно их не уменьшит, а время займёт.
+  */
+  private val PACKED_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp", "heic", "heif", "gif", "mp4", "zip")
 }
 
 // Calls onStart for every start tag inside the current element until its end tag; onStart may read a child to its end.
@@ -381,7 +464,9 @@ object DataStore {
 
   private val main = Handler(Looper.getMainLooper())
   private val saveTask = Runnable { saveNow() }
-  private var loaded = false
+  @Volatile private var loaded = false
+
+  val isLoaded get() = loaded /** Данные загружены; до этого каталог данных не меняется */
 
   /**
   * Loads stored data on the IO executor and publishes points, notes and tracks on the main thread.
@@ -391,15 +476,17 @@ object DataStore {
   */
   fun init() {
     TrackStorage.io.execute {
+      var unsupported: UnsupportedDataFormat? = null
       val data = runCatching { DataIO.read(AppDirs.base) }.onFailure { error ->
         Log.w("xTravel", "Data not loaded", error)
-        // Каталог чужой версии загрузчик не понимает целиком, поэтому очищается весь.
-        if (error is UnsupportedDataFormat) {
-          AppDirs.base.listFiles()?.forEach { it.deleteRecursively() }
-          AppDialog.message(AppSession.app.getString(R.string.format_unsupported, error.version))
-        }
+        if (error is UnsupportedDataFormat) unsupported = error
       }.getOrNull()
-      val tracks = TrackStorage.collect(data?.tracks.orEmpty())
+      // Каталог несовместимого формата не загружается и не меняется, пока пользователь не решит его судьбу.
+      unsupported?.let { error ->
+        main.post { IncompatibleData.ask(error.version) }
+        return@execute
+      }
+      val tracks = TrackStorage.collect(data?.tracks.orEmpty(), data?.active)
       main.post {
         PointStore.onLoaded(data)
         RouteStore.onLoaded(data?.routes)
@@ -445,125 +532,4 @@ object DataStore {
   fun saveAfterPending() {
     main.post { saveNow() }
   }
-}
-
-// Files opened in xTravel or shared to it, and files chosen by the user: an exchange file is unpacked and offered in the data
-// selection sheet, other files are only reported. The files are taken one after another: the next one waits for the sheet.
-/**
-* Queues incoming content URIs, prepares exchange or GPX data and waits for each import sheet to finish.
-*
-* Public and subclass/module-facing members:
-* - [handle] - Extracts import URIs from a VIEW, SEND or SEND_MULTIPLE intent and queues them.
-* - [open] - Queues content URIs for sequential preparation and import selection.
-*/
-object DataImport {
-
-  private val main = Handler(Looper.getMainLooper())
-  private val queue = ArrayDeque<Uri>()
-  private var busy = false
-
-  /**
-  * Extracts import URIs from a VIEW, SEND or SEND_MULTIPLE intent and queues them.
-  * @param context Android context used to access the required resources or services; retained contexts are converted to application context where implemented.
-  * @param intent Android intent carrying startup, import or notification information.
-  * @return Unit; null or unsupported intents supply no files.
-  */
-  fun handle(context: Context, intent: Intent?) {
-    if (intent != null) open(context, urisOf(intent))
-  }
-
-  // Main thread.
-  /**
-  * Queues content URIs for sequential preparation and import selection.
-  *
-  * Usage: Call on the main thread with permission to read the URIs.
-  * @param context Android context used to access the required resources or services; retained contexts are converted to application context where implemented.
-  * @param uris Content URIs with read access for sequential import.
-  * @return Unit; files are processed asynchronously, one import sheet at a time.
-  */
-  fun open(context: Context, uris: List<Uri>) {
-    if (uris.isEmpty()) return
-    val app = context.applicationContext
-    queue.addAll(uris)
-    next(app)
-  }
-
-  private fun next(context: Context) {
-    if (busy) return
-    val uri = queue.removeFirstOrNull() ?: return
-    busy = true
-    TrackStorage.io.execute { prepare(context, uri) }
-  }
-
-  private fun done(context: Context) {
-    busy = false
-    next(context)
-  }
-
-  // Runs on the "io" thread.
-  private fun prepare(context: Context, uri: Uri) {
-    val name = displayName(context, uri) ?: uri.lastPathSegment ?: uri.toString()
-    val dir = File(AppDirs.share, "import")
-    var unsupported: String? = null
-    val data = runCatching {
-      dir.deleteRecursively()
-      // An exchange file is a zip with data.xml; what is not one is tried as GPX.
-      if (unpack(context, uri, dir)) DataIO.read(dir) else GpxImport.read(context, uri, dir)
-    }.onFailure {
-      Log.w("xTravel", "Import failed: $uri", it)
-      if (it is UnsupportedDataFormat) unsupported = it.version
-    }.getOrNull()
-    main.post {
-      if (data == null) {
-        dir.deleteRecursively()
-        val version = unsupported
-        if (version != null) AppDialog.message(context.getString(R.string.format_unsupported, version))
-        else Notify.error(R.string.import_not_implemented, name)
-        done(context)
-      } else {
-        DataSelect.openImport(data) { done(context) }
-      }
-    }
-  }
-
-  // False when the file is not a zip with data.xml. Entries leading outside dir are skipped.
-  private fun unpack(context: Context, uri: Uri, dir: File): Boolean = runCatching {
-    val root = dir.also { it.mkdirs() }.canonicalFile
-    val stream = context.contentResolver.openInputStream(uri) ?: return false
-    ZipInputStream(stream.buffered()).use { zip ->
-      while (true) {
-        val entry = zip.nextEntry ?: break
-        val target = File(root, entry.name).canonicalFile
-        if (!target.path.startsWith(root.path + File.separator)) continue
-        if (entry.isDirectory) {
-          target.mkdirs()
-        } else {
-          target.parentFile?.mkdirs()
-          target.outputStream().use { zip.copyTo(it) }
-        }
-      }
-    }
-    File(root, DATA_FILE).isFile
-  }.getOrDefault(false)
-
-  private fun displayName(context: Context, uri: Uri): String? = runCatching {
-    context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-      if (cursor.moveToFirst()) cursor.getString(0) else null
-    }
-  }.getOrNull()
-
-  private fun urisOf(intent: Intent): List<Uri> = when (intent.action) {
-    Intent.ACTION_VIEW -> listOfNotNull(intent.data)
-    Intent.ACTION_SEND -> listOfNotNull(stream(intent))
-    Intent.ACTION_SEND_MULTIPLE -> streams(intent)
-    else -> emptyList()
-  }
-
-  private fun stream(intent: Intent): Uri? =
-    if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
-    else @Suppress("DEPRECATION") intent.getParcelableExtra(Intent.EXTRA_STREAM)
-
-  private fun streams(intent: Intent): List<Uri> =
-    if (Build.VERSION.SDK_INT >= 33) intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java).orEmpty()
-    else @Suppress("DEPRECATION") intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM).orEmpty()
 }

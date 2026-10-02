@@ -20,7 +20,9 @@ PointStore.kt - владелец точек. Главный поток.
     onLoaded, find, findOrCreate, findAt, add, update,
     remove, move, focus, highlight,
     newPictureFile, releasePicture, pictureFile, usedPictures,
-    Import, prepareImport (поток "io"), applyImport (главный поток).
+    ImportPicture, applyImport(points, notes) -> картинки к заполнению (главный поток), isDuplicate (любой поток),
+    dropPicture(name). Импорт сливает точки и записки сразу, картинкам резервирует защищённые файлы;
+    заполняет их, убирает недополученные и снимает защиту Storage\DataImport.kt.
   PointsData: секция points. PointXml: общие элементы точек и записок.
   Слияние при импорте: точка с теми же координатами (5 знаков) не добавляется, а сливается -
     новые тексты по точному совпадению, картинки по размеру и первым 200 байтам;
@@ -99,8 +101,9 @@ PointInfoEditor.kt - метаинформация точки и записок.
     элемент, NEW_ELEMENT добавляет новый.
 
 Pictures.kt - декодирование с уменьшением и кэш.
-  Pictures: decode, aspect, forget.
-  FitPicture, SquareThumb, PictureViewer (масштаб и сдвиг).
+  Pictures: decode, aspect, originalSize, forget.
+  FitPicture, SquareThumb, PictureViewer (масштаб от вмещённой до 1:1, сдвиг в пределах картинки, двойное касание;
+    обрезается по своей области, без увеличения свайп отдаётся пейджеру).
   У всех трёх необязательный каталог - для чужих картинок, например из импорта.
 
 Отдача точек - провайдерами IGeoDataShare в Storage\ и map\, импорт GPX - Storage\GpxImport.kt.

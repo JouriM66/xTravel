@@ -45,13 +45,17 @@ private class ShowEditorCommand(private val id: String, private val editor: () -
   override fun execute() = BottomSheet.open(id, editor())
 }
 
-private class OpenModalCommand(private val id: String, private val content: @Composable () -> Unit) : IAppCommand {
+private class OpenModalCommand(
+  private val id: String,
+  private val onClose: (() -> Unit)? = null,
+  private val content: @Composable () -> Unit
+) : IAppCommand {
   override fun available() = ModalScreen.ownerId != id
-  override fun execute() = ModalScreen.open(id, content)
+  override fun execute() = ModalScreen.open(id, onClose, content)
 }
 
 private class SelectMapTypeCommand(private val type: MapType) : IAppCommand {
-  override fun available() = Maps.shownType != type
+  override fun available() = Maps.type != type
   override fun execute() = Maps.select(type)
 }
 
@@ -82,6 +86,7 @@ private class SimpleCommand(private val action: () -> Unit) : IAppCommand {
 * - [shareData] - Command opening data selection for export.
 * - [clearData] - Command opening data selection for deletion.
 * - [checkFiles] - Command scanning stored files for cleanup candidates.
+* - [netAccess] - Окно сетевого доступа к данным.
 * - [saveSettings] - Command exporting nonsecret preferences to a temporary text file and opening sharing.
 * - [exit] - Command ending the current application session through its attached activity.
 */
@@ -115,7 +120,7 @@ object AppCommands {
   * Command opening application settings in the modal screen.
   * @return Command opening application settings in the modal screen.
   */
-  val openSettings: IAppCommand = OpenModalCommand("settings") { SettingsScreen() }
+  val openSettings: IAppCommand = OpenModalCommand("settings", onClose = ::settingsClosed) { SettingsScreen() }
   /**
   * Command opening the application information and license screen.
   * @return Command opening the application information and license screen.
@@ -160,6 +165,7 @@ object AppCommands {
   * @return Command scanning stored files for cleanup candidates.
   */
   val checkFiles: IAppCommand = FilesCheck
+  val netAccess: IAppCommand = SimpleCommand { NetAccess.open() } /** Окно сетевого доступа к данным */
 
   /**
   * Command exporting nonsecret preferences to a temporary text file and opening sharing.

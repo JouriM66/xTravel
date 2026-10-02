@@ -12,6 +12,7 @@ object YandexSearchEngine : IGeoSearchEngine, ILicenseInfo {
   private const val FALLBACK_LANGUAGE = "en_US"
 
   override val mustBeAsync = true
+  override val configured: Boolean get() = Settings.geocoderKey.value.isNotBlank()
   override fun byPosition(point: GeoPoint): List<GeoAnswer> = request("${point.lon},${point.lat}")
   override fun byText(text: String): List<GeoAnswer> = request(text)
 
@@ -29,10 +30,7 @@ object YandexSearchEngine : IGeoSearchEngine, ILicenseInfo {
 
   private fun request(text: String): List<GeoAnswer> {
     val key = Settings.geocoderKey.value.trim()
-    if (key.isEmpty()) {
-      Notify.error(R.string.geocoder_key_missing)
-      return emptyList()
-    }
+    if (key.isEmpty()) return emptyList()
     val system = Languages.systemLocale()
     val locale = "${system.language}_${system.country.ifEmpty { system.language.uppercase() }}"
     val language = if (locale in LANGUAGES) locale else FALLBACK_LANGUAGE

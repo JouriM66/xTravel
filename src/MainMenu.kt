@@ -59,6 +59,7 @@ internal fun MainMenu() {
        menu = MenuState.CLOSED
        importFile.launch(arrayOf("*/*"))
      }
+     CommandMenuItem(Icons.Outlined.Wifi, stringResource(R.string.net_access), AppCommands.netAccess) { menu = MenuState.CLOSED }
      CommandMenuItem(Icons.Outlined.DeleteSweep, stringResource(R.string.clear), AppCommands.clearData) { menu = MenuState.CLOSED }
      CommandMenuItem(Icons.Outlined.CleaningServices, stringResource(R.string.compact_data), AppCommands.checkFiles) { menu = MenuState.CLOSED }
     }

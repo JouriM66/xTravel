@@ -156,6 +156,11 @@ object AppDirs {
   lateinit var base: File
     private set
 
+  val ANDROID_DIRS = setOf("files", "cache") /** Служебные каталоги Android внутри base: не данные приложения */
+
+  /** Содержимое base без служебных каталогов Android - всё, что относится к данным приложения */
+  fun dataContent(): List<File> = base.listFiles().orEmpty().filter { !(it.isDirectory && it.name in ANDROID_DIRS) }
+
   /**
   * Track data directory; its getter creates the directory when needed.
   * @return Track data directory; its getter creates the directory when needed.

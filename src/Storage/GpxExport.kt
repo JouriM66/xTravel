@@ -4,9 +4,6 @@ package com.jm.xtravel
 import android.util.Xml
 import org.xmlpull.v1.XmlSerializer
 import java.io.File
-import java.time.LocalDate
-import java.time.format.DateTimeFormatter
-import java.util.Locale
 
 private const val NS = "http://www.topografix.com/GPX/1/1"
 
@@ -24,7 +21,7 @@ object GpxShare : IGeoDataShare {
 
   private fun write(set: DataSet): File {
     val single = set.tracks.singleOrNull()?.takeIf { set.points.isEmpty() && set.routes.isEmpty() }
-    val name = single?.name ?: ("xTravelData-" + LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy-MMM-dd", Locale.US)))
+    val name = single?.let { safeFileName(it.name) } ?: ("xTravelData-" + fileTimeStamp())
     val file = File(AppDirs.share, "$name.gpx")
     file.outputStream().use { out ->
       val xml = Xml.newSerializer()
@@ -68,7 +65,7 @@ object GpxShare : IGeoDataShare {
     xml.startTag(NS, "name").text(track.name).endTag(NS, "name")
     xml.startTag(NS, "trkseg")
     var fields: List<String> = emptyList()
-    TrackFiles.forEachSample(TrackFiles.dataFile(track.name), { fields = it }) { _, lat, lon, parts ->
+    TrackFiles.forEachSample(TrackFiles.dataFile(track.id), { fields = it }) { _, lat, lon, parts ->
       fun value(field: String) = fields.indexOf(field).let { if (it >= 0) parts.getOrNull(it).orEmpty() else "" }
       xml.startTag(NS, "trkpt")
       xml.attribute(null, "lat", lat.toString())

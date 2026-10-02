@@ -51,8 +51,9 @@ fun segmentDistance(x: Float, y: Float, x1: Float, y1: Float, x2: Float, y2: Flo
   return hypot(x - (x1 + t * dx), y - (y1 + t * dy))
 }
 
-/** Tests whether a screen position is within a pixel tolerance of a projected track polyline. */
+/** Tests whether a screen position is within a pixel tolerance of a projected track polyline. Линия в другой проекции не попадается */
 fun nearLine(line: TrackLine, screen: Offset, viewport: MapViewport, limit: Float): Boolean {
+  if (line.projection !== viewport.projection) return false
   var px = 0f
   var py = 0f
   for (i in line.from until line.size) {

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.material.icons.automirrored.outlined.HelpOutline
 import androidx.compose.material.icons.outlined.ArrowDropDown
+import androidx.compose.material.icons.outlined.Settings as SettingsIcon
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.TextButton
 import androidx.compose.ui.focus.onFocusChanged
@@ -92,128 +93,137 @@ private val PALETTE: List<Int> = buildList {
 * @return Unit; changes are applied through persisted Setting values.
 */
 @Composable
-fun SettingsScreen() {
-  // Rows are compact: switches are not stretched to the 48dp Material minimum.
-  CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) { SettingsContent() }
-}
+fun SettingsScreen() = SettingsPage(stringResource(R.string.settings)) { SettingsRows() }
 
+/** Полноэкранный редактор настроек поверх текущего модального окна. Строки - редакторами из этого файла. */
+fun openSettingsPage(ownerId: String, title: String, rows: @Composable ColumnScope.() -> Unit) =
+  ModalScreen.push(ownerId) { SettingsPage(title, rows) }
+
+// Rows are compact: switches are not stretched to the 48dp Material minimum.
 // A touch anywhere takes the focus from a text field; the field touched gets it back.
 @Composable
-private fun SettingsContent() {
+private fun SettingsPage(title: String, rows: @Composable ColumnScope.() -> Unit) {
   val focus = LocalFocusManager.current
-  Column(
-    Modifier
-      .fillMaxSize()
-      .pointerInput(Unit) {
-        awaitEachGesture {
-          awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-          focus.clearFocus()
+  CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
+    Column(
+      Modifier
+        .fillMaxSize()
+        .pointerInput(Unit) {
+          awaitEachGesture {
+            awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            focus.clearFocus()
+          }
         }
-      }
-      .imePadding()
-  ) {
-    ModalHeader(stringResource(R.string.settings))
-    SettingsRows()
+        .imePadding()
+    ) {
+      ModalHeader(title)
+      Column(
+        Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+        content = rows
+      )
+    }
   }
 }
 
-/** Прокручиваемые группы настроек под неподвижным заголовком. FOR LOCAL USE */
+/** Группы общих настроек. FOR LOCAL USE */
 @Composable
-private fun ColumnScope.SettingsRows() {
-  Column(
-    Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),
-    verticalArrangement = Arrangement.spacedBy(2.dp)
-  ) {
-    Section(R.string.settings_general)
-    LanguageSetting()
-    SwitchRow(R.string.keep_screen_on, Settings.keepScreenOn)
-    NumberRow(R.string.image_quality, Settings.imageQuality, min = MIN_IMAGE_QUALITY, max = 100)
+private fun SettingsRows() {
+  Section(R.string.settings_general)
+  LanguageSetting()
+  SwitchRow(R.string.keep_screen_on, Settings.keepScreenOn)
+  NumberRow(R.string.image_quality, Settings.imageQuality, min = MIN_IMAGE_QUALITY, max = 100)
+  MapTypeRow()
+  ChoiceRow(R.string.map_direction, Settings.mapDirection, MapDirection.entries.associateWith { it.label })
 
-    Section(R.string.settings_gps)
-    SwitchRow(R.string.use_gps, Settings.useGps)
-    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-      Text(stringResource(R.string.show_speed), modifier = Modifier.weight(1f))
-      androidx.compose.material3.Checkbox(checked = Settings.showSpeed.value, onCheckedChange = { Settings.showSpeed.value = it })
-    }
-
-    Section(R.string.settings_map)
-    ChoiceRow(R.string.map_direction, Settings.mapDirection, MapDirection.entries.associateWith { it.label })
-    SwitchRow(R.string.map_3d, Settings.map3d)
-
-    Section(R.string.settings_yandex)
-    KeyRow(R.string.mapkit_key, R.string.mapkit_key_help, Settings.mapkitKey)
-    KeyRow(R.string.geocoder_key, R.string.geocoder_key_help, Settings.geocoderKey)
-    NumberRow(R.string.geocoder_results, Settings.geocoderResults, min = 1)
-
-    Section(R.string.settings_position)
-    NumberRow(R.string.rings, Settings.rings)
-    NumberRow(R.string.ring_step_value, Settings.ringStepValue)
-    NumberRow(R.string.auto_position, Settings.autoPosition)
-
-    Section(R.string.settings_gps_filter)
-    val filterLabels = GpsDataManager.filters.associate { filter ->
-      filter.name() to when (filter) {
-        GpsFilter_None -> stringResource(R.string.filter_none)
-        GpsFilter_Simple -> stringResource(R.string.filter_simple)
-        else -> filter.name()
-      }
-    }
-    val currentFilter = GpsDataManager.currentFilter()
-    ComboRow(R.string.filter_mode, filterLabels[currentFilter.name()] ?: currentFilter.name()) { close ->
-      filterLabels.forEach { (name, label) ->
-        ChoiceMenuItem(label, currentFilter.name() == name) {
-          close()
-          Settings.filterMode.value = name
-        }
-      }
-    }
-    if (currentFilter === GpsFilter_Simple) {
-      NumberRow(R.string.filter_accuracy, Settings.filterAccuracy)
-      NumberRow(R.string.filter_stationary, Settings.filterStationarySpeed)
-      NumberRow(R.string.filter_min_distance, Settings.filterMinDistance)
-      NumberRow(R.string.filter_max_speed, Settings.filterMaxSpeed)
-    }
-
-    Section(R.string.settings_tracks)
-    NumberRow(R.string.min_points, Settings.minPoints)
-    NumberRow(R.string.tail_points, Settings.tailPoints)
-    NumberRow(R.string.current_track_width, Settings.currentTrackWidth)
-    ColorRow(R.string.current_track_color, Settings.currentTrackColor)
-    NumberRow(R.string.saved_track_width, Settings.savedTrackWidth)
-    ColorRow(R.string.saved_track_color, Settings.savedTrackColor)
-
-    Section(R.string.settings_points)
-    ColorRow(R.string.color_independent, Settings.pointIndependentColor)
-    ColorRow(R.string.color_planned, Settings.pointPlannedColor)
-    ColorRow(R.string.color_active, Settings.pointActiveColor)
-    ColorRow(R.string.color_visited, Settings.pointVisitedColor)
-    ColorRow(R.string.color_alarm, Settings.pointAlarmColor)
-    ColorRow(R.string.color_open, Settings.availabilityOpenColor)
-    ColorRow(R.string.color_closed, Settings.availabilityClosedColor)
-    ColorRow(R.string.color_time_to_open, Settings.timeToOpenColor)
-    ColorRow(R.string.color_time_to_close, Settings.timeToCloseColor)
-    NumberRow(R.string.point_name_size, Settings.pointNameSize)
-    NumberRow(R.string.point_time_size, Settings.pointTimeSize)
-
-    Section(R.string.settings_route)
-    ChoiceRow(R.string.transport, Settings.routeTransport, TransportKind.entries.associateWith { it.label })
-    SwitchRow(R.string.route_mark_points, Settings.routeMarkPoints)
-    ModeRow(R.string.route_building, Settings.routeAutoCalculate)
-    ModeRow(R.string.route_sorting, Settings.routeAutoSort)
-    NumberRow(R.string.route_arrival_radius, Settings.routeArrivalRadius, min = 10, max = 500)
-    SwitchRow(R.string.route_show_maneuver, Settings.routeShowManeuver)
-    ColorRow(R.string.route_color_active, Settings.routeActiveColor)
-    ColorRow(R.string.route_color_inactive, Settings.routeInactiveColor)
+  Section(R.string.settings_gps)
+  SwitchRow(R.string.use_gps, Settings.useGps)
+  Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+    Text(stringResource(R.string.show_speed), modifier = Modifier.weight(1f))
+    androidx.compose.material3.Checkbox(checked = Settings.showSpeed.value, onCheckedChange = { Settings.showSpeed.value = it })
   }
+
+  SubSection(R.string.settings_position)
+  NumberRow(R.string.rings, Settings.rings)
+  NumberRow(R.string.ring_step_value, Settings.ringStepValue)
+  NumberRow(R.string.auto_position, Settings.autoPosition)
+
+  SubSection(R.string.settings_gps_filter)
+  val filterLabels = GpsDataManager.filters.associate { filter ->
+    filter.name() to when (filter) {
+      GpsFilter_None -> stringResource(R.string.filter_none)
+      GpsFilter_Simple -> stringResource(R.string.filter_simple)
+      else -> filter.name()
+    }
+  }
+  val currentFilter = GpsDataManager.currentFilter()
+  ComboRow(R.string.filter_mode, filterLabels[currentFilter.name()] ?: currentFilter.name()) { close ->
+    filterLabels.forEach { (name, label) ->
+      ChoiceMenuItem(label, currentFilter.name() == name) {
+        close()
+        Settings.filterMode.value = name
+      }
+    }
+  }
+  if (currentFilter === GpsFilter_Simple) {
+    NumberRow(R.string.filter_accuracy, Settings.filterAccuracy)
+    NumberRow(R.string.filter_stationary, Settings.filterStationarySpeed)
+    NumberRow(R.string.filter_min_distance, Settings.filterMinDistance)
+    NumberRow(R.string.filter_max_speed, Settings.filterMaxSpeed)
+  }
+
+  Section(R.string.settings_tracks)
+  NumberRow(R.string.min_points, Settings.minPoints)
+  NumberRow(R.string.tail_points, Settings.tailPoints)
+  NumberRow(R.string.current_track_width, Settings.currentTrackWidth)
+  ColorRow(R.string.current_track_color, Settings.currentTrackColor)
+  NumberRow(R.string.saved_track_width, Settings.savedTrackWidth)
+  ColorRow(R.string.saved_track_color, Settings.savedTrackColor)
+
+  Section(R.string.settings_points)
+  ColorRow(R.string.color_independent, Settings.pointIndependentColor)
+  ColorRow(R.string.color_planned, Settings.pointPlannedColor)
+  ColorRow(R.string.color_active, Settings.pointActiveColor)
+  ColorRow(R.string.color_visited, Settings.pointVisitedColor)
+  ColorRow(R.string.color_alarm, Settings.pointAlarmColor)
+  ColorRow(R.string.color_open, Settings.availabilityOpenColor)
+  ColorRow(R.string.color_closed, Settings.availabilityClosedColor)
+  ColorRow(R.string.color_time_to_open, Settings.timeToOpenColor)
+  ColorRow(R.string.color_time_to_close, Settings.timeToCloseColor)
+  NumberRow(R.string.point_name_size, Settings.pointNameSize)
+  NumberRow(R.string.point_time_size, Settings.pointTimeSize)
+
+  Section(R.string.settings_route)
+  RouteBuilderRow()
+  ChoiceRow(R.string.transport, Settings.routeTransport, TransportKind.entries.associateWith { it.label })
+  SwitchRow(R.string.route_mark_points, Settings.routeMarkPoints)
+  ModeRow(R.string.route_building, Settings.routeAutoCalculate)
+  ModeRow(R.string.route_sorting, Settings.routeAutoSort)
+  NumberRow(R.string.route_arrival_radius, Settings.routeArrivalRadius, min = 10, max = 500)
+  SwitchRow(R.string.route_show_maneuver, Settings.routeShowManeuver)
+  ColorRow(R.string.route_color_active, Settings.routeActiveColor)
+  ColorRow(R.string.route_color_inactive, Settings.routeInactiveColor)
 }
 
 @Composable
-private fun Section(@StringRes title: Int) {
+internal fun Section(@StringRes title: Int) {
   Text(
     stringResource(title),
     style = MaterialTheme.typography.titleMedium.let { it.copy(fontSize = it.fontSize * 1.5f) },
     color = MaterialTheme.colorScheme.primary,
     modifier = Modifier.padding(top = 16.dp)
+  )
+  HorizontalDivider()
+}
+
+/** Подгруппа внутри группы: заголовок мельче, чем у Section. */
+@Composable
+internal fun SubSection(@StringRes title: Int) {
+  Text(
+    stringResource(title),
+    style = MaterialTheme.typography.titleMedium,
+    color = MaterialTheme.colorScheme.primary,
+    modifier = Modifier.padding(top = 12.dp)
   )
   HorizontalDivider()
 }
@@ -227,9 +237,66 @@ private fun LanguageSetting() {
   }
 }
 
-// Choice from a list: the value in a frame with the drop-down arrow, the list opens under it.
+/** Тип карты, выбранный в окне настроек; ставится при его закрытии (settingsClosed). Переживает окна настроек
+    поставщиков: под ними окно общих настроек выходит из композиции. FOR LOCAL USE
+*/
+private var chosenMapType by mutableStateOf<MapType?>(null)
+
+/** Применяет отложенный выбор окна общих настроек; зовётся при его закрытии. */
+internal fun settingsClosed() {
+  val type = chosenMapType ?: return
+  chosenMapType = null
+  Maps.select(type)
+}
+
+/** Изображение карты: выбор поставщика и кнопка его настроек. FOR LOCAL USE */
 @Composable
-private fun ComboRow(@StringRes label: Int, value: String, items: @Composable ColumnScope.(close: () -> Unit) -> Unit) {
+private fun MapTypeRow() {
+  val type = chosenMapType ?: Maps.type
+  val title = stringResource(type.label)
+  val more = type.settings?.let { rows -> { openSettingsPage(MAP_SETTINGS, title, rows) } }
+  ComboRow(R.string.map_image, title, onMore = more, hasMore = true) { close ->
+    MapType.entries.forEach { entry ->
+      ChoiceMenuItem(stringResource(entry.label), entry == type) {
+        close()
+        chosenMapType = entry
+      }
+    }
+  }
+}
+
+private const val MAP_SETTINGS = "map_settings" /** Владелец окна настроек поставщика карты */
+
+/** Выбор построителя маршрутов; кнопка справа открывает редактор настроек выбранного. FOR LOCAL USE */
+@Composable
+private fun RouteBuilderRow() {
+  val current = RouteBuilders.current
+  val title = current?.let { stringResource(it.label) } ?: stringResource(R.string.route_builder_none)
+  val more = current?.settings?.let { rows -> { openSettingsPage(ROUTE_BUILDER_SETTINGS, title, rows) } }
+  ComboRow(R.string.route_builder, title, onMore = more, hasMore = true) { close ->
+    RouteBuilders.all.forEach { builder ->
+      ChoiceMenuItem(stringResource(builder.label), builder === current) {
+        close()
+        Settings.routeBuilder.value = builder.id
+      }
+    }
+  }
+}
+
+private const val ROUTE_BUILDER_SETTINGS = "route_builder" /** Владелец окна настроек построителя маршрутов */
+
+/** Выбор из списка: значение в рамке со стрелкой, список открывается под ним.
+    hasMore - кнопка настроек справа от списка (настройки выбранного); onMore null - она серая и не нажимается,
+    но место держит, чтобы список не прыгал при смене выбора.
+*/
+@Composable
+internal fun ComboRow(
+  @StringRes label: Int,
+  value: String,
+  onMore: (() -> Unit)? = null,
+  hasMore: Boolean = onMore != null,
+  items: @Composable ColumnScope.(close: () -> Unit) -> Unit
+) {
   var expanded by remember { mutableStateOf(false) }
   val shape = RoundedCornerShape(8.dp)
   Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -250,11 +317,20 @@ private fun ComboRow(@StringRes label: Int, value: String, items: @Composable Co
       }
       DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) { items { expanded = false } }
     }
+    if (hasMore) {
+      val tint = MaterialTheme.colorScheme.onSurfaceVariant.let { if (onMore == null) it.copy(alpha = 0.38f) else it }
+      Box(
+        Modifier.padding(start = 4.dp).size(36.dp).clip(shape).clickable(enabled = onMore != null) { onMore?.invoke() },
+        contentAlignment = Alignment.Center
+      ) {
+        Icon(Icons.Outlined.SettingsIcon, stringResource(R.string.settings), tint = tint)
+      }
+    }
   }
 }
 
 @Composable
-private fun SwitchRow(@StringRes label: Int, setting: BoolSetting) {
+internal fun SwitchRow(@StringRes label: Int, setting: BoolSetting) {
   Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
     Text(stringResource(label), modifier = Modifier.weight(1f))
     Switch(checked = setting.value, onCheckedChange = { setting.value = it })
@@ -263,7 +339,7 @@ private fun SwitchRow(@StringRes label: Int, setting: BoolSetting) {
 
 // A switch that says what it does better as a choice of two: the operation is done by hand or by the application.
 @Composable
-private fun ModeRow(@StringRes label: Int, setting: BoolSetting) {
+internal fun ModeRow(@StringRes label: Int, setting: BoolSetting) {
   val modes = listOf(false to R.string.mode_manual, true to R.string.mode_auto)
   ComboRow(label, stringResource(modes.first { it.first == setting.value }.second)) { close ->
     modes.forEach { (value, text) ->
@@ -276,7 +352,7 @@ private fun ModeRow(@StringRes label: Int, setting: BoolSetting) {
 }
 
 @Composable
-private fun <E : Enum<E>> ChoiceRow(@StringRes label: Int, setting: EnumSetting<E>, labels: Map<E, Int>) {
+internal fun <E : Enum<E>> ChoiceRow(@StringRes label: Int, setting: EnumSetting<E>, labels: Map<E, Int>) {
   ComboRow(label, stringResource(labels.getValue(setting.value))) { close ->
     labels.forEach { (value, text) ->
       ChoiceMenuItem(stringResource(text), setting.value == value) {
@@ -289,7 +365,7 @@ private fun <E : Enum<E>> ChoiceRow(@StringRes label: Int, setting: EnumSetting<
 
 // Key of a service: "?" shows what it is for, the field hides the value and saves it when it loses the focus.
 @Composable
-private fun KeyRow(@StringRes label: Int, @StringRes help: Int, setting: StringSetting) {
+internal fun KeyRow(@StringRes label: Int, @StringRes help: Int, setting: StringSetting) {
   var text by remember(setting.value) { mutableStateOf(setting.value) }
   var shown by remember { mutableStateOf(false) }
   val focus = LocalFocusManager.current
@@ -352,7 +428,7 @@ private fun showKeyHelp(@StringRes title: Int, @StringRes help: Int) = AppDialog
 
 // The unit is part of the label, for example "Ring step, m".
 @Composable
-private fun NumberRow(@StringRes label: Int, setting: IntSetting, min: Int = 0, max: Int = Int.MAX_VALUE) {
+internal fun NumberRow(@StringRes label: Int, setting: IntSetting, min: Int = 0, max: Int = Int.MAX_VALUE) {
   Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
     Text(stringResource(label), modifier = Modifier.weight(1f).padding(end = 8.dp))
     NumberField(setting, min, max)
@@ -400,7 +476,7 @@ private fun ColumnScope.StepButton(icon: ImageVector, onClick: () -> Unit) {
 }
 
 @Composable
-private fun ColorRow(@StringRes label: Int, setting: ColorSetting) {
+internal fun ColorRow(@StringRes label: Int, setting: ColorSetting) {
   Row(
     modifier = Modifier.fillMaxWidth().clickable { showColorDialog(label, setting) }.padding(vertical = 4.dp),
     verticalAlignment = Alignment.CenterVertically

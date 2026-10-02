@@ -2,7 +2,7 @@
 # Сборка debug и release под все архитектуры.
 #   Пуш в main - пакеты прикладываются к запуску (вкладка Actions, раздел Artifacts).
 #   Ручной запуск с publish - дополнительно GitHub Release: версия из version.properties,
-#   описание - раздел "## versionName (versionCode)" из NEWS.md. Повторный выпуск той же версии - ошибка.
+#   описание - раздел "## versionName.versionCode" из NEWS.md. Повторный выпуск той же версии - ошибка.
 
 name: Build
 
@@ -42,7 +42,7 @@ jobs:
           echo "VERSION_NAME=$NAME" >> "$GITHUB_ENV"
           echo "VERSION_CODE=$CODE" >> "$GITHUB_ENV"
           echo "TAG=v$NAME.$CODE" >> "$GITHUB_ENV"
-          echo "Version $NAME ($CODE)"
+          echo "Version $NAME.$CODE"
 
       # Проверки выпуска до сборки, чтобы не тратить время на заведомо отклоняемый релиз
       - name: Check release
@@ -50,7 +50,7 @@ jobs:
         run: |
           if [ "$GITHUB_REF_NAME" != "main" ]; then echo "::error::Release is published only from main"; exit 1; fi
           if gh release view "$TAG" > /dev/null 2>&1; then echo "::error::Release $TAG already exists, increase versionCode"; exit 1; fi
-          HEADER="## $VERSION_NAME ($VERSION_CODE)"
+          HEADER="## $VERSION_NAME.$VERSION_CODE"
           tr -d '\r' < NEWS.md | awk -v h="$HEADER" '
             $0 == h { found = 1; next }
             found && /^## / { exit }
@@ -100,17 +100,17 @@ jobs:
           for TYPE in debug release; do
             APK=$(find output/build/outputs/apk/$TYPE -name '*.apk' | head -n1)
             if [ -z "$APK" ]; then echo "::error::$TYPE apk not found"; exit 1; fi
-            cp "$APK" "packages/xTravel-$VERSION_NAME-$VERSION_CODE-$TYPE.apk"
+            cp "$APK" "packages/xTravel-$VERSION_NAME.$VERSION_CODE-$TYPE.apk"
           done
           ls -l packages
 
       - uses: actions/upload-artifact@v5
         with:
-          name: xTravel-${{ env.VERSION_NAME }}-${{ env.VERSION_CODE }}
+          name: xTravel-${{ env.VERSION_NAME }}.${{ env.VERSION_CODE }}
           path: packages/*.apk
 
       - name: Publish release
         if: env.PUBLISH == 'true'
         run: |
           gh release create "$TAG" packages/*.apk --target "$GITHUB_SHA" \
-            --title "$VERSION_NAME ($VERSION_CODE)" --notes-file release-notes.md
+            --title "$VERSION_NAME.$VERSION_CODE" --notes-file release-notes.md

@@ -47,7 +47,7 @@ function Invoke-Build([bool]$Release) {
     $version = Get-AppVersion
     $variant = if ($Release) { 'Release' } else { 'Debug' }
 
-    Write-Host "Build: $variant, version $($version.versionName) ($($version.versionCode))" -ForegroundColor Cyan
+    Write-Host "Build: $variant, version $($version.versionName).$($version.versionCode)" -ForegroundColor Cyan
     # Out-Host keeps gradle output off the pipeline, the function returns the apk path only.
     & (Join-Path $root 'gradlew.bat') "assemble$variant" | Out-Host
     if ($LASTEXITCODE -ne 0) { Fail 'Build failed, see gradle output above' }

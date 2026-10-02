@@ -159,12 +159,12 @@ gradlew.bat assembleRelease
 * Пуш в `main` — пакеты прикладываются к запуску: вкладка **Actions** → запуск → раздел **Artifacts**.
   Скачивание только для вошедших в GitHub, хранятся 90 дней.
 * Выпуск — вручную: **Actions** → **Build** → **Run workflow**, ветка `main`, отметить **Publish GitHub Release**.
-  Создаётся релиз `versionName (versionCode)` с тегом `v<versionName>.<versionCode>` и пакетами
-  `xTravel-<versionName>-<versionCode>-release.apk` и `xTravel-<versionName>-<versionCode>-debug.apk`, доступный всем на странице **Releases**.
+  Создаётся релиз `<versionName>.<versionCode>` с тегом `v<versionName>.<versionCode>` и пакетами
+  `xTravel-<versionName>.<versionCode>-release.apk` и `xTravel-<versionName>.<versionCode>-debug.apk`, доступный всем на странице **Releases**.
 
 Перед выпуском:
 1. Увеличить `versionCode` в `version.properties`, если эта версия уже выпускалась: повторный выпуск той же версии отклоняется.
-2. Добавить в начало `NEWS.md` раздел `## <versionName> (<versionCode>)` с новостями версии — он становится описанием релиза.
+2. Добавить в начало `NEWS.md` раздел `## <versionName>.<versionCode>` с новостями версии — он становится описанием релиза.
    Без раздела текущей версии выпуск отклоняется.
 3. Отправить изменения в `main`.
 

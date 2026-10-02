@@ -169,7 +169,7 @@ object Failures {
   }
 
   private fun reportText(where: String, error: Throwable): String = buildString {
-    appendLine("xTravel ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+    appendLine("xTravel ${BuildConfig.VERSION_NAME}.${BuildConfig.VERSION_CODE}")
     appendLine("Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}), ${Build.MANUFACTURER} ${Build.MODEL}")
     appendLine("Time: ${TrackTime.format(System.currentTimeMillis())}")
     appendLine("Where: $where")

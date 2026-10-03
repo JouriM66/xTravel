@@ -21,7 +21,8 @@ English
 
 ## Versions
 
-* 0.1.70
+* [v0.1.104](../../releases/tag/0.1.104)
+* [v0.1.70](../../releases/tag/0.1.70)
 
 ---
 
